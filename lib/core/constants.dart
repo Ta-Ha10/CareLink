@@ -1,4 +1,4 @@
-/// Constants and enums used throughout the CareLink application
+// Constants and enums used throughout the CareLink application
 
 /// User roles in the application
 enum UserRole {
@@ -21,7 +21,9 @@ enum UserRole {
 class FirestoreCollections {
   static const String users = 'users';
   static const String connections = 'connections';
+  static const String patientLinks = 'patient_links';
   static const String medicines = 'medicines';
+  static const String activities = 'activities';
   static const String notifications = 'notifications';
   static const String sosAlerts = 'sos_alerts';
   static const String healthData = 'health_data';
@@ -65,6 +67,7 @@ enum ConnectionStatus {
 /// Notification types
 enum NotificationType {
   medicine('medicine'),
+  activity('activity'),
   sos('sos'),
   warning('warning'),
   system('system'),
@@ -124,5 +127,11 @@ class AppConstants {
 
   // API call timeouts
   static const Duration apiTimeout = Duration(seconds: 30);
-  static const Duration databaseTimeout = Duration(seconds: 15);
+  static const Duration databaseTimeout = Duration(seconds: 30);
+}
+
+/// Local preference keys used by the app
+class AppPrefsKeys {
+  static const String onboardingComplete = 'onboarding_complete';
+  static const String preferredRole = 'preferred_role';
 }

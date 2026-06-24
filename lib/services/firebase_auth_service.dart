@@ -1,4 +1,8 @@
+import 'dart:convert';
+
+import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:http/http.dart' as http;
 import 'package:carelink/core/exceptions.dart';
 
 /// Firebase Authentication Service
@@ -7,7 +11,7 @@ class FirebaseAuthService {
   final FirebaseAuth _firebaseAuth;
 
   FirebaseAuthService({FirebaseAuth? firebaseAuth})
-      : _firebaseAuth = firebaseAuth ?? FirebaseAuth.instance;
+    : _firebaseAuth = firebaseAuth ?? FirebaseAuth.instance;
 
   /// Get current authenticated user
   User? get currentUser => _firebaseAuth.currentUser;
@@ -25,7 +29,7 @@ class FirebaseAuthService {
   Stream<User?> get authStateChanges => _firebaseAuth.authStateChanges();
 
   /// Register new user with email and password
-  /// 
+  ///
   /// Throws [AuthException] if registration fails
   Future<UserCredential> registerWithEmailAndPassword({
     required String email,
@@ -59,7 +63,7 @@ class FirebaseAuthService {
   }
 
   /// Login user with email and password
-  /// 
+  ///
   /// Throws [AuthException] if login fails
   Future<UserCredential> loginWithEmailAndPassword({
     required String email,
@@ -88,8 +92,56 @@ class FirebaseAuthService {
     }
   }
 
+  /// Verify an email/password pair without changing the active auth session.
+  Future<VerifiedAuthUser> verifyEmailAndPassword({
+    required String email,
+    required String password,
+  }) async {
+    try {
+      if (email.isEmpty || password.isEmpty) {
+        throw AuthException(
+          message: 'Email and password cannot be empty',
+          code: 'empty-fields',
+        );
+      }
+
+      final apiKey = Firebase.app().options.apiKey;
+      final response = await http.post(
+        Uri.https(
+          'identitytoolkit.googleapis.com',
+          '/v1/accounts:signInWithPassword',
+          {'key': apiKey},
+        ),
+        headers: const {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'email': email.trim(),
+          'password': password,
+          'returnSecureToken': true,
+        }),
+      );
+
+      final body = jsonDecode(response.body) as Map<String, dynamic>;
+      if (response.statusCode >= 400) {
+        throw _handleIdentityToolkitError(body);
+      }
+
+      return VerifiedAuthUser(
+        uid: body['localId'] as String? ?? '',
+        email: body['email'] as String? ?? email.trim(),
+        idToken: body['idToken'] as String?,
+      );
+    } catch (e) {
+      if (e is AuthException) {
+        rethrow;
+      }
+      throw AuthException.generic(
+        'Failed to verify credentials: ${e.toString()}',
+      );
+    }
+  }
+
   /// Logout current user
-  /// 
+  ///
   /// Throws [AuthException] if logout fails
   Future<void> logout() async {
     try {
@@ -100,7 +152,7 @@ class FirebaseAuthService {
   }
 
   /// Send password reset email
-  /// 
+  ///
   /// Throws [AuthException] if operation fails
   Future<void> sendPasswordResetEmail({required String email}) async {
     try {
@@ -115,12 +167,14 @@ class FirebaseAuthService {
     } on FirebaseAuthException catch (e) {
       throw _handleFirebaseAuthException(e);
     } catch (e) {
-      throw AuthException.generic('Failed to send reset email: ${e.toString()}');
+      throw AuthException.generic(
+        'Failed to send reset email: ${e.toString()}',
+      );
     }
   }
 
   /// Confirm password reset with new password
-  /// 
+  ///
   /// Throws [AuthException] if operation fails
   Future<void> confirmPasswordReset({
     required String code,
@@ -150,7 +204,7 @@ class FirebaseAuthService {
   }
 
   /// Update user email
-  /// 
+  ///
   /// Throws [AuthException] if operation fails
   Future<void> updateEmail({required String newEmail}) async {
     try {
@@ -162,10 +216,7 @@ class FirebaseAuthService {
       }
 
       if (currentUser == null) {
-        throw AuthException(
-          message: 'No user logged in',
-          code: 'no-user',
-        );
+        throw AuthException(message: 'No user logged in', code: 'no-user');
       }
 
       await currentUser!.verifyBeforeUpdateEmail(newEmail.trim());
@@ -177,7 +228,7 @@ class FirebaseAuthService {
   }
 
   /// Update user password
-  /// 
+  ///
   /// Throws [AuthException] if operation fails
   Future<void> updatePassword({required String newPassword}) async {
     try {
@@ -193,10 +244,7 @@ class FirebaseAuthService {
       }
 
       if (currentUser == null) {
-        throw AuthException(
-          message: 'No user logged in',
-          code: 'no-user',
-        );
+        throw AuthException(message: 'No user logged in', code: 'no-user');
       }
 
       await currentUser!.updatePassword(newPassword);
@@ -208,15 +256,12 @@ class FirebaseAuthService {
   }
 
   /// Delete current user account
-  /// 
+  ///
   /// Throws [AuthException] if operation fails
   Future<void> deleteAccount() async {
     try {
       if (currentUser == null) {
-        throw AuthException(
-          message: 'No user logged in',
-          code: 'no-user',
-        );
+        throw AuthException(message: 'No user logged in', code: 'no-user');
       }
 
       await currentUser!.delete();
@@ -231,22 +276,21 @@ class FirebaseAuthService {
   bool isEmailVerified() => currentUser?.emailVerified ?? false;
 
   /// Send email verification
-  /// 
+  ///
   /// Throws [AuthException] if operation fails
   Future<void> sendEmailVerification() async {
     try {
       if (currentUser == null) {
-        throw AuthException(
-          message: 'No user logged in',
-          code: 'no-user',
-        );
+        throw AuthException(message: 'No user logged in', code: 'no-user');
       }
 
       await currentUser!.sendEmailVerification();
     } on FirebaseAuthException catch (e) {
       throw _handleFirebaseAuthException(e);
     } catch (e) {
-      throw AuthException.generic('Failed to send verification email: ${e.toString()}');
+      throw AuthException.generic(
+        'Failed to send verification email: ${e.toString()}',
+      );
     }
   }
 
@@ -276,7 +320,51 @@ class FirebaseAuthService {
           code: e.code,
         );
       default:
-        return AuthException.generic(e.message ?? 'Authentication error', code: e.code);
+        return AuthException.generic(
+          e.message ?? 'Authentication error',
+          code: e.code,
+        );
     }
   }
+
+  AuthException _handleIdentityToolkitError(Map<String, dynamic> body) {
+    final error = body['error'];
+    final message = error is Map<String, dynamic>
+        ? error['message']?.toString()
+        : null;
+
+    switch (message) {
+      case 'EMAIL_NOT_FOUND':
+        return AuthException.userNotFound();
+      case 'INVALID_PASSWORD':
+      case 'INVALID_LOGIN_CREDENTIALS':
+        return AuthException.wrongPassword();
+      case 'USER_DISABLED':
+        return AuthException.userDisabled();
+      case 'TOO_MANY_ATTEMPTS_TRY_LATER':
+        return AuthException(
+          message: 'Too many attempts. Please try again later.',
+          code: 'too-many-requests',
+        );
+      case 'INVALID_EMAIL':
+        return AuthException.invalidEmail();
+      default:
+        return AuthException.generic(
+          message ?? 'Authentication error',
+          code: 'auth-error',
+        );
+    }
+  }
+}
+
+class VerifiedAuthUser {
+  final String uid;
+  final String email;
+  final String? idToken;
+
+  const VerifiedAuthUser({
+    required this.uid,
+    required this.email,
+    this.idToken,
+  });
 }

@@ -1,1 +1,25 @@
-{"flutter":{"platforms":{"android":{"default":{"projectId":"carelink-1a1ee","appId":"1:843128922357:android:0808edbf60f569b2bb65bc","fileOutput":"android/app/google-services.json"}},"dart":{"lib/firebase_options.dart":{"projectId":"carelink-1a1ee","configurations":{"android":"1:843128922357:android:0808edbf60f569b2bb65bc","ios":"1:843128922357:ios:d4cce113c279ad3fbb65bc"}}}}}}
+{
+  "flutter": {
+    "platforms": {
+      "android": {
+        "default": {
+          "projectId": "carelink-1a1ee",
+          "appId": "1:843128922357:android:0808edbf60f569b2bb65bc",
+          "fileOutput": "android/app/google-services.json"
+        }
+      },
+      "dart": {
+        "lib/firebase_options.dart": {
+          "projectId": "carelink-1a1ee",
+          "configurations": {
+            "android": "1:843128922357:android:0808edbf60f569b2bb65bc",
+            "ios": "1:843128922357:ios:d4cce113c279ad3fbb65bc"
+          }
+        }
+      }
+    }
+  },
+  "firestore": {
+    "rules": "firestore.rules"
+  }
+}

@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:carelink/core/exceptions.dart';
 import 'package:carelink/core/constants.dart';
@@ -8,7 +10,9 @@ class FirestoreService {
   final FirebaseFirestore _firestore;
 
   FirestoreService({FirebaseFirestore? firestore})
-      : _firestore = firestore ?? FirebaseFirestore.instance;
+    : _firestore = firestore ?? FirebaseFirestore.instance;
+
+  FirebaseFirestore get firestore => _firestore;
 
   // ============== Generic Methods ==============
 
@@ -46,6 +50,38 @@ class FirestoreService {
         await ref.set(data).timeout(AppConstants.databaseTimeout);
       } else {
         ref = await _firestore
+            .collection(collection)
+            .add(data)
+            .timeout(AppConstants.databaseTimeout);
+      }
+
+      return ref;
+    } on FirebaseException catch (e) {
+      throw _handleFirebaseException(e);
+    } catch (e) {
+      throw FirestoreException.writeFailed(e.toString());
+    }
+  }
+
+  /// Create a new document in a subcollection.
+  Future<DocumentReference<Map<String, dynamic>>> createSubcollectionDocument({
+    required String parentCollection,
+    required String parentDocId,
+    required String collection,
+    required Map<String, dynamic> data,
+    String? customId,
+  }) async {
+    try {
+      final parentDoc = _firestore
+          .collection(parentCollection)
+          .doc(parentDocId);
+      DocumentReference<Map<String, dynamic>> ref;
+
+      if (customId != null) {
+        ref = parentDoc.collection(collection).doc(customId);
+        await ref.set(data).timeout(AppConstants.databaseTimeout);
+      } else {
+        ref = await parentDoc
             .collection(collection)
             .add(data)
             .timeout(AppConstants.databaseTimeout);
@@ -105,8 +141,7 @@ class FirestoreService {
     bool descending = false,
   }) async {
     try {
-      Query<Map<String, dynamic>> query =
-          _firestore.collection(collection);
+      Query<Map<String, dynamic>> query = _firestore.collection(collection);
 
       // Apply conditions
       if (conditions != null) {
@@ -125,9 +160,45 @@ class FirestoreService {
         query = query.limit(limit);
       }
 
-      return await query
-          .get()
-          .timeout(AppConstants.databaseTimeout);
+      return await query.get().timeout(AppConstants.databaseTimeout);
+    } on FirebaseException catch (e) {
+      throw _handleFirebaseException(e);
+    } catch (e) {
+      throw FirestoreException.readFailed(e.toString());
+    }
+  }
+
+  /// Query documents in a subcollection with optional conditions.
+  Future<QuerySnapshot<Map<String, dynamic>>> querySubcollectionDocuments({
+    required String parentCollection,
+    required String parentDocId,
+    required String collection,
+    List<QueryCondition>? conditions,
+    int? limit,
+    String? orderBy,
+    bool descending = false,
+  }) async {
+    try {
+      Query<Map<String, dynamic>> query = _firestore
+          .collection(parentCollection)
+          .doc(parentDocId)
+          .collection(collection);
+
+      if (conditions != null) {
+        for (final condition in conditions) {
+          query = condition.apply(query) as Query<Map<String, dynamic>>;
+        }
+      }
+
+      if (orderBy != null) {
+        query = query.orderBy(orderBy, descending: descending);
+      }
+
+      if (limit != null) {
+        query = query.limit(limit);
+      }
+
+      return await query.get().timeout(AppConstants.databaseTimeout);
     } on FirebaseException catch (e) {
       throw _handleFirebaseException(e);
     } catch (e) {
@@ -144,8 +215,7 @@ class FirestoreService {
     bool descending = false,
   }) {
     try {
-      Query<Map<String, dynamic>> query =
-          _firestore.collection(collection);
+      Query<Map<String, dynamic>> query = _firestore.collection(collection);
 
       // Apply conditions
       if (conditions != null) {
@@ -170,6 +240,42 @@ class FirestoreService {
     }
   }
 
+  /// Stream documents in a subcollection with optional conditions.
+  Stream<QuerySnapshot<Map<String, dynamic>>> streamSubcollectionDocuments({
+    required String parentCollection,
+    required String parentDocId,
+    required String collection,
+    List<QueryCondition>? conditions,
+    int? limit,
+    String? orderBy,
+    bool descending = false,
+  }) {
+    try {
+      Query<Map<String, dynamic>> query = _firestore
+          .collection(parentCollection)
+          .doc(parentDocId)
+          .collection(collection);
+
+      if (conditions != null) {
+        for (final condition in conditions) {
+          query = condition.apply(query) as Query<Map<String, dynamic>>;
+        }
+      }
+
+      if (orderBy != null) {
+        query = query.orderBy(orderBy, descending: descending);
+      }
+
+      if (limit != null) {
+        query = query.limit(limit);
+      }
+
+      return query.snapshots();
+    } catch (e) {
+      throw FirestoreException.readFailed(e.toString());
+    }
+  }
+
   /// Batch write operations
   Future<void> batchWrite(List<BatchOperation> operations) async {
     try {
@@ -180,6 +286,10 @@ class FirestoreService {
       }
 
       await batch.commit().timeout(AppConstants.databaseTimeout);
+    } on TimeoutException {
+      throw FirestoreException.writeFailed(
+        'Database write timed out after ${AppConstants.databaseTimeout.inSeconds} seconds. Please check your connection and try again.',
+      );
     } on FirebaseException catch (e) {
       throw _handleFirebaseException(e);
     } catch (e) {
@@ -198,7 +308,9 @@ class FirestoreService {
     } on FirebaseException catch (e) {
       throw _handleFirebaseException(e);
     } catch (e) {
-      throw FirestoreException.writeFailed('Transaction failed: ${e.toString()}');
+      throw FirestoreException.writeFailed(
+        'Transaction failed: ${e.toString()}',
+      );
     }
   }
 
@@ -300,10 +412,7 @@ class BatchUpdateOperation extends BatchOperation {
 
   @override
   void apply(WriteBatch batch, FirebaseFirestore firestore) {
-    batch.update(
-      firestore.collection(collection).doc(docId),
-      data,
-    );
+    batch.update(firestore.collection(collection).doc(docId), data);
   }
 }
 
@@ -312,10 +421,7 @@ class BatchDeleteOperation extends BatchOperation {
   final String collection;
   final String docId;
 
-  BatchDeleteOperation({
-    required this.collection,
-    required this.docId,
-  });
+  BatchDeleteOperation({required this.collection, required this.docId});
 
   @override
   void apply(WriteBatch batch, FirebaseFirestore firestore) {

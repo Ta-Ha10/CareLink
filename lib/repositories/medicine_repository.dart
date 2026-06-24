@@ -7,13 +7,16 @@ import 'package:carelink/core/constants.dart';
 /// Handles medicine CRUD operations and reminders
 class MedicineRepository {
   final FirestoreService _firestoreService;
+  static const String _subcollectionName = 'medicines';
 
   MedicineRepository({required FirestoreService firestoreService})
-      : _firestoreService = firestoreService;
+    : _firestoreService = firestoreService;
 
   /// Create new medicine reminder
   Future<String> createMedicine({
+    required String connectionId,
     required String patientId,
+    required String monitorId,
     required String medicineName,
     required String dosage,
     required String time,
@@ -25,7 +28,9 @@ class MedicineRepository {
     try {
       final medicine = MedicineModel(
         id: '', // Will be set by Firestore
+        connectionId: connectionId,
         patientId: patientId,
+        monitorId: monitorId,
         medicineName: medicineName,
         dosage: dosage,
         time: time,
@@ -34,11 +39,16 @@ class MedicineRepository {
         createdBy: createdBy,
         isActive: true,
         createdAt: DateTime.now(),
+        updatedAt: DateTime.now(),
         daysOfWeek: daysOfWeek,
+        lastReminderKey: null,
+        lastReminderAt: null,
       );
 
-      final ref = await _firestoreService.createDocument(
-        collection: FirestoreCollections.medicines,
+      final ref = await _firestoreService.createSubcollectionDocument(
+        parentCollection: FirestoreCollections.connections,
+        parentDocId: connectionId,
+        collection: _subcollectionName,
         data: medicine.toJson(),
       );
 
@@ -49,10 +59,14 @@ class MedicineRepository {
   }
 
   /// Get medicine by ID
-  Future<MedicineModel> getMedicineById({required String medicineId}) async {
+  Future<MedicineModel> getMedicineById({
+    required String connectionId,
+    required String medicineId,
+  }) async {
     try {
       final doc = await _firestoreService.getDocument(
-        collection: FirestoreCollections.medicines,
+        collection:
+            '${FirestoreCollections.connections}/$connectionId/$_subcollectionName',
         docId: medicineId,
       );
 
@@ -67,57 +81,58 @@ class MedicineRepository {
   }
 
   /// Get all medicines for a patient
-  Future<List<MedicineModel>> getPatientMedicines({
-    required String patientId,
+  Future<List<MedicineModel>> getConnectionMedicines({
+    required String connectionId,
     bool onlyActive = true,
   }) async {
     try {
-      final conditions = [
-        QueryCondition(field: 'patientId', value: patientId),
-      ];
-
+      final conditions = <QueryCondition>[];
       if (onlyActive) {
         conditions.add(QueryCondition(field: 'isActive', value: true));
       }
 
-      final result = await _firestoreService.queryDocuments(
-        collection: FirestoreCollections.medicines,
+      final result = await _firestoreService.querySubcollectionDocuments(
+        parentCollection: FirestoreCollections.connections,
+        parentDocId: connectionId,
+        collection: _subcollectionName,
         conditions: conditions,
-        orderBy: 'time',
       );
 
-      return result.docs
+      final medicines = result.docs
           .map((doc) => MedicineModel.fromJson(doc.data(), doc.id))
           .toList();
+
+      medicines.sort(_compareByTime);
+      return medicines;
     } catch (e) {
       rethrow;
     }
   }
 
   /// Stream medicines for a patient (real-time updates)
-  Stream<List<MedicineModel>> streamPatientMedicines({
-    required String patientId,
+  Stream<List<MedicineModel>> streamConnectionMedicines({
+    required String connectionId,
     bool onlyActive = true,
   }) {
     try {
-      final conditions = [
-        QueryCondition(field: 'patientId', value: patientId),
-      ];
-
+      final conditions = <QueryCondition>[];
       if (onlyActive) {
         conditions.add(QueryCondition(field: 'isActive', value: true));
       }
 
       return _firestoreService
-          .streamDocuments(
-            collection: FirestoreCollections.medicines,
+          .streamSubcollectionDocuments(
+            parentCollection: FirestoreCollections.connections,
+            parentDocId: connectionId,
+            collection: _subcollectionName,
             conditions: conditions,
-            orderBy: 'time',
           )
           .map((snapshot) {
-            return snapshot.docs
+            final medicines = snapshot.docs
                 .map((doc) => MedicineModel.fromJson(doc.data(), doc.id))
                 .toList();
+            medicines.sort(_compareByTime);
+            return medicines;
           });
     } catch (e) {
       return Stream.error(e);
@@ -126,6 +141,7 @@ class MedicineRepository {
 
   /// Update medicine details
   Future<void> updateMedicine({
+    required String connectionId,
     required String medicineId,
     String? medicineName,
     String? dosage,
@@ -148,7 +164,8 @@ class MedicineRepository {
         updateData['updatedAt'] = DateTime.now();
 
         await _firestoreService.updateDocument(
-          collection: FirestoreCollections.medicines,
+          collection:
+              '${FirestoreCollections.connections}/$connectionId/$_subcollectionName',
           docId: medicineId,
           data: updateData,
         );
@@ -160,17 +177,16 @@ class MedicineRepository {
 
   /// Enable/disable medicine reminder
   Future<void> toggleMedicineActive({
+    required String connectionId,
     required String medicineId,
     required bool isActive,
   }) async {
     try {
       await _firestoreService.updateDocument(
-        collection: FirestoreCollections.medicines,
+        collection:
+            '${FirestoreCollections.connections}/$connectionId/$_subcollectionName',
         docId: medicineId,
-        data: {
-          'isActive': isActive,
-          'updatedAt': DateTime.now(),
-        },
+        data: {'isActive': isActive, 'updatedAt': DateTime.now()},
       );
     } catch (e) {
       rethrow;
@@ -178,10 +194,14 @@ class MedicineRepository {
   }
 
   /// Delete medicine reminder
-  Future<void> deleteMedicine({required String medicineId}) async {
+  Future<void> deleteMedicine({
+    required String connectionId,
+    required String medicineId,
+  }) async {
     try {
       await _firestoreService.deleteDocument(
-        collection: FirestoreCollections.medicines,
+        collection:
+            '${FirestoreCollections.connections}/$connectionId/$_subcollectionName',
         docId: medicineId,
       );
     } catch (e) {
@@ -191,12 +211,12 @@ class MedicineRepository {
 
   /// Get upcoming medicines for a patient (within next N hours)
   Future<List<MedicineModel>> getUpcomingMedicines({
-    required String patientId,
+    required String connectionId,
     int hoursAhead = 24,
   }) async {
     try {
-      final medicines = await getPatientMedicines(
-        patientId: patientId,
+      final medicines = await getConnectionMedicines(
+        connectionId: connectionId,
         onlyActive: true,
       );
 
@@ -222,5 +242,32 @@ class MedicineRepository {
     } catch (e) {
       rethrow;
     }
+  }
+
+  int _compareByTime(MedicineModel a, MedicineModel b) {
+    return _timeToMinutes(a.time).compareTo(_timeToMinutes(b.time));
+  }
+
+  int _timeToMinutes(String time) {
+    final parts = time.split(':');
+    if (parts.length < 2) {
+      return 0;
+    }
+
+    final hour = int.tryParse(parts[0]) ?? 0;
+    final minutePart = parts[1].split(' ').first;
+    final minute = int.tryParse(minutePart) ?? 0;
+    final isPm = time.toUpperCase().contains('PM');
+    final isAm = time.toUpperCase().contains('AM');
+
+    var normalizedHour = hour;
+    if (isPm && normalizedHour < 12) {
+      normalizedHour += 12;
+    }
+    if (isAm && normalizedHour == 12) {
+      normalizedHour = 0;
+    }
+
+    return normalizedHour * 60 + minute;
   }
 }

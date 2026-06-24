@@ -1,50 +1,162 @@
-import 'dart:async';
-
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 
+import '../core/constants.dart';
+import '../core/exceptions.dart';
+import '../models/user_model.dart';
+import '../repositories/connection_repository.dart';
+import '../services/firebase_auth_service.dart';
+import '../services/firestore_service.dart';
 import '../theme/app_theme.dart';
 import '../widgets/common.dart';
 
 class ConnectDevicePage extends StatefulWidget {
-  const ConnectDevicePage({super.key});
+  const ConnectDevicePage({super.key, this.role});
+
+  final UserRole? role;
 
   @override
   State<ConnectDevicePage> createState() => _ConnectDevicePageState();
 }
 
-class _ConnectDevicePageState extends State<ConnectDevicePage>
-    with SingleTickerProviderStateMixin {
-  final TextEditingController codeController = TextEditingController();
-  late final AnimationController scanController;
-  bool loading = false;
-  bool success = false;
+class _ConnectDevicePageState extends State<ConnectDevicePage> {
+  final FirebaseAuthService _authService = FirebaseAuthService();
+  late final ConnectionRepository _connectionRepository = ConnectionRepository(
+    firestoreService: FirestoreService(),
+  );
+  final TextEditingController _patientEmailController = TextEditingController();
+  final TextEditingController _patientPasswordController =
+      TextEditingController();
+
+  bool _loading = false;
+  String? _errorMessage;
+  String? _successMessage;
+
+  bool get _isMonitor => widget.role == UserRole.monitor;
 
   @override
   void initState() {
     super.initState();
-    scanController = AnimationController(
-      vsync: this,
-      duration: const Duration(seconds: 2),
-    )..repeat(reverse: true);
+    if (widget.role == UserRole.patient) {
+      _syncPatientLinkRecord();
+    }
   }
 
   @override
   void dispose() {
-    codeController.dispose();
-    scanController.dispose();
+    _patientEmailController.dispose();
+    _patientPasswordController.dispose();
     super.dispose();
   }
 
-  void connect() {
-    setState(() => loading = true);
-    Timer(const Duration(milliseconds: 1400), () {
-      if (mounted) setState(() => success = true);
+  Future<void> _syncPatientLinkRecord() async {
+    final patientId = _authService.currentUserId;
+    final patientEmail = _authService.currentUserEmail;
+    if (patientId == null || patientEmail == null) {
+      return;
+    }
+
+    try {
+      await _connectionRepository.upsertPatientLink(
+        patientId: patientId,
+        patientName: patientEmail.split('@').first,
+        patientEmail: patientEmail,
+      );
+    } catch (_) {
+      // If we can't seed the index, the patient can still use the app.
+    }
+  }
+
+  Future<void> _linkPatientByCredentials() async {
+    final currentUserId = _authService.currentUserId;
+
+    if (!_isMonitor) {
+      setState(
+        () => _errorMessage = 'Only caregivers can link a patient here.',
+      );
+      return;
+    }
+
+    if (currentUserId == null) {
+      setState(() => _errorMessage = 'Please sign in first.');
+      return;
+    }
+
+    final patientEmail = _patientEmailController.text.trim();
+    final patientPassword = _patientPasswordController.text;
+
+    if (patientEmail.isEmpty || !patientEmail.contains('@')) {
+      setState(() => _errorMessage = 'Enter a valid patient email.');
+      return;
+    }
+
+    if (patientPassword.isEmpty) {
+      setState(() => _errorMessage = 'Enter the patient password.');
+      return;
+    }
+
+    setState(() {
+      _loading = true;
+      _errorMessage = null;
+      _successMessage = null;
     });
+
+    try {
+      final verifiedPatient = await _authService.verifyEmailAndPassword(
+        email: patientEmail,
+        password: patientPassword,
+      );
+
+      final firestore = FirestoreService();
+      final patientDoc = await firestore.getDocument(
+        collection: FirestoreCollections.users,
+        docId: verifiedPatient.uid,
+      );
+
+      if (!patientDoc.exists) {
+        throw FirestoreException.documentNotFound(verifiedPatient.uid);
+      }
+
+      final patient = UserModel.fromJson(patientDoc.data()!);
+      if (patient.role != UserRole.patient) {
+        throw ValidationException.invalidInput(
+          'patient email must belong to a patient account',
+        );
+      }
+
+      await _connectionRepository.linkPatientAndMonitor(
+        patientId: patient.uid,
+        monitorId: currentUserId,
+        patientName: patient.name,
+        patientEmail: patient.email,
+        monitorName: _authService.currentUserEmail ?? 'Caregiver',
+      );
+
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _successMessage = 'Linked ${patient.name} successfully.';
+        _loading = false;
+      });
+      _patientPasswordController.clear();
+    } catch (e) {
+      if (!mounted) {
+        return;
+      }
+
+      final message = e is AppException ? e.message : e.toString();
+      setState(() {
+        _errorMessage = 'Link failed: $message';
+        _loading = false;
+      });
+    }
   }
 
   @override
   Widget build(BuildContext context) {
+    final currentUserEmail = _authService.currentUserEmail;
+
     return Scaffold(
       body: Stack(
         children: [
@@ -55,326 +167,191 @@ class _ConnectDevicePageState extends State<ConnectDevicePage>
           ),
           PageContent(
             padding: const EdgeInsets.fromLTRB(24, 96, 24, 32),
-            maxWidth: 390,
+            maxWidth: 620,
             children: [
               Text(
-                'Connect Device',
+                'Link Caregiver & Patient',
                 textAlign: TextAlign.center,
                 style: Theme.of(context).textTheme.headlineMedium,
               ),
               const SizedBox(height: 8),
               Text(
-                'Position the QR code inside the frame to link your health monitor automatically.',
+                _isMonitor
+                    ? 'Select a patient to create a secure connection.'
+                    : 'Share your account email with your caregiver so they can connect your account.',
                 textAlign: TextAlign.center,
                 style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                   color: AppColors.onSurfaceVariant,
                 ),
               ),
-              const SizedBox(height: 34),
-              Center(
-                child: SizedBox.square(
-                  dimension: 280,
-                  child: Stack(
+              const SizedBox(height: 24),
+              if (_isMonitor)
+                GlassCard(
+                  radius: 28,
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      ClipRRect(
-                        borderRadius: BorderRadius.circular(24),
-                        child: Stack(
-                          fit: StackFit.expand,
-                          children: [
-                            ColorFiltered(
-                              colorFilter: const ColorFilter.mode(
-                                Colors.grey,
-                                BlendMode.saturation,
-                              ),
-                              child: Image.network(
-                                scanImage,
-                                fit: BoxFit.cover,
-                              ),
-                            ),
-                            Container(
-                              color: Colors.black.withValues(alpha: 0.38),
-                            ),
-                            AnimatedBuilder(
-                              animation: scanController,
-                              builder: (context, child) {
-                                return Positioned(
-                                  top: scanController.value * 278,
-                                  left: 0,
-                                  right: 0,
-                                  child: Container(
-                                    height: 2,
-                                    decoration: BoxDecoration(
-                                      gradient: LinearGradient(
-                                        colors: [
-                                          Colors.transparent,
-                                          AppColors.primaryContainer,
-                                          Colors.transparent,
-                                        ],
-                                      ),
-                                      boxShadow: [
-                                        BoxShadow(
-                                          color: AppColors.primaryContainer
-                                              .withValues(alpha: 0.5),
-                                          blurRadius: 14,
-                                        ),
-                                      ],
-                                    ),
-                                  ),
-                                );
-                              },
-                            ),
-                            Align(
-                              alignment: Alignment.bottomCenter,
-                              child: Padding(
-                                padding: const EdgeInsets.only(bottom: 16),
-                                child: Container(
-                                  padding: const EdgeInsets.symmetric(
-                                    horizontal: 16,
-                                    vertical: 8,
-                                  ),
-                                  decoration: BoxDecoration(
-                                    color: Colors.black.withValues(alpha: 0.42),
-                                    borderRadius: BorderRadius.circular(20),
-                                  ),
-                                  child: Text(
-                                    'Scanning for devices...',
-                                    style: Theme.of(context)
-                                        .textTheme
-                                        .labelSmall
-                                        ?.copyWith(color: Colors.white),
-                                  ),
-                                ),
-                              ),
-                            ),
-                          ],
+                      Text(
+                        'Caregiver Link',
+                        style: Theme.of(context).textTheme.titleLarge,
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        'Enter the patient account email and password to verify ownership before linking.',
+                        style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                          color: AppColors.onSurfaceVariant,
                         ),
                       ),
-                      const _Corner(alignment: Alignment.topLeft),
-                      const _Corner(alignment: Alignment.topRight),
-                      const _Corner(alignment: Alignment.bottomLeft),
-                      const _Corner(alignment: Alignment.bottomRight),
+                      const SizedBox(height: 18),
+                      _AuthField(
+                        label: 'Patient Email',
+                        hint: 'patient@example.com',
+                        controller: _patientEmailController,
+                        enabled: !_loading,
+                      ),
+                      const SizedBox(height: 16),
+                      _AuthField(
+                        label: 'Patient Password',
+                        hint: 'Password',
+                        obscure: true,
+                        controller: _patientPasswordController,
+                        enabled: !_loading,
+                      ),
+                      const SizedBox(height: 20),
+                      GradientButton(
+                        label: _loading ? 'Linking...' : 'Verify & Link',
+                        icon: Icons.link,
+                        onPressed: _loading ? () {} : _linkPatientByCredentials,
+                      ),
+                    ],
+                  ),
+                )
+              else
+                GlassCard(
+                  radius: 28,
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Your Account Email',
+                        style: Theme.of(context).textTheme.titleLarge,
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        'Share this email with your caregiver. They can use it to connect your account.',
+                        style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                          color: AppColors.onSurfaceVariant,
+                        ),
+                      ),
+                      const SizedBox(height: 18),
+                      Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.all(16),
+                        decoration: BoxDecoration(
+                          color: AppColors.primary.withValues(alpha: 0.08),
+                          borderRadius: BorderRadius.circular(18),
+                          border: Border.all(
+                            color: AppColors.primary.withValues(alpha: 0.18),
+                          ),
+                        ),
+                        child: SelectableText(
+                          currentUserEmail ?? 'Sign in again to get your email',
+                          textAlign: TextAlign.center,
+                          style: Theme.of(context).textTheme.titleMedium
+                              ?.copyWith(
+                                letterSpacing: 2.4,
+                                fontWeight: FontWeight.w700,
+                              ),
+                        ),
+                      ),
+                      const SizedBox(height: 14),
+                      GradientButton(
+                        label: 'Open Patient Home',
+                        icon: Icons.home,
+                        onPressed: () {
+                          Navigator.of(
+                            context,
+                          ).pushReplacementNamed('/patient');
+                        },
+                      ),
                     ],
                   ),
                 ),
-              ),
-              const SizedBox(height: 34),
-              Row(
-                children: [
-                  Expanded(
-                    child: Divider(
-                      color: AppColors.outlineVariant.withValues(alpha: 0.45),
-                    ),
-                  ),
-                  Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 14),
-                    child: Text(
-                      'OR',
-                      style: Theme.of(context).textTheme.labelLarge?.copyWith(
-                        color: AppColors.onSurfaceVariant.withValues(
-                          alpha: 0.6,
-                        ),
-                        letterSpacing: 2.4,
-                      ),
-                    ),
-                  ),
-                  Expanded(
-                    child: Divider(
-                      color: AppColors.outlineVariant.withValues(alpha: 0.45),
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 24),
-              Text(
-                'Manual Invite Code',
-                style: Theme.of(context).textTheme.labelLarge,
-              ),
-              const SizedBox(height: 8),
-              TextField(
-                controller: codeController,
-                maxLength: 8,
-                textAlign: TextAlign.center,
-                textCapitalization: TextCapitalization.characters,
-                inputFormatters: [
-                  FilteringTextInputFormatter.allow(RegExp('[A-Za-z0-9]')),
-                  UpperCaseTextFormatter(),
-                ],
-                style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-                  letterSpacing: 3.2,
-                  fontWeight: FontWeight.w600,
-                ),
-                decoration: InputDecoration(
-                  counterText: '',
-                  hintText: 'ENTER 8-DIGIT CODE',
-                  suffixIcon: const Icon(
-                    Icons.edit_note,
-                    color: AppColors.primary,
-                  ),
-                  filled: true,
-                  fillColor: Colors.white,
-                  enabledBorder: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(18),
-                    borderSide: const BorderSide(
-                      color: Color(0xFFE2E8F0),
-                      width: 2,
-                    ),
-                  ),
-                  focusedBorder: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(18),
-                    borderSide: const BorderSide(
-                      color: AppColors.primary,
-                      width: 2,
-                    ),
+              if (_successMessage != null) ...[
+                const SizedBox(height: 16),
+                GlassCard(
+                  radius: 24,
+                  child: Text(
+                    _successMessage!,
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(color: Colors.green),
                   ),
                 ),
-              ),
-              const SizedBox(height: 22),
-              GradientButton(
-                label: loading ? 'Establishing Link...' : 'Connect',
-                icon: loading ? Icons.sync : Icons.arrow_forward,
-                height: 64,
-                onPressed: loading ? () {} : connect,
-              ),
-              const SizedBox(height: 30),
-              Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Icon(
-                    Icons.verified_user_outlined,
-                    color: AppColors.onSurfaceVariant.withValues(alpha: 0.7),
-                    size: 18,
-                  ),
-                  const SizedBox(width: 8),
-                  Flexible(
-                    child: Text(
-                      'Secured by CareLink End-to-End Encryption',
-                      textAlign: TextAlign.center,
-                      style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                        color: AppColors.onSurfaceVariant.withValues(
-                          alpha: 0.72,
-                        ),
-                      ),
-                    ),
-                  ),
-                ],
-              ),
+              ],
+              if (_errorMessage != null) ...[
+                const SizedBox(height: 16),
+                Text(
+                  _errorMessage!,
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(color: Colors.red),
+                ),
+              ],
             ],
           ),
-          if (success)
-            Positioned.fill(
-              child: Container(
-                color: Colors.white.withValues(alpha: 0.72),
-                child: Center(
-                  child: GlassCard(
-                    radius: 32,
-                    padding: const EdgeInsets.all(32),
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        const CircleAvatar(
-                          radius: 42,
-                          backgroundColor: AppColors.secondaryContainer,
-                          child: Icon(
-                            Icons.check_circle,
-                            color: AppColors.onSecondaryContainer,
-                            size: 44,
-                          ),
-                        ),
-                        const SizedBox(height: 22),
-                        Text(
-                          'Connection Successful',
-                          textAlign: TextAlign.center,
-                          style: Theme.of(context).textTheme.headlineLarge,
-                        ),
-                        const SizedBox(height: 10),
-                        Text(
-                          'Your device is now securely paired with the CareLink ecosystem.',
-                          textAlign: TextAlign.center,
-                          style: Theme.of(context).textTheme.bodyMedium
-                              ?.copyWith(color: AppColors.onSurfaceVariant),
-                        ),
-                        const SizedBox(height: 28),
-                        OutlinedButton(
-                          onPressed: () =>
-                              Navigator.of(context).pushNamed('/patient'),
-                          style: OutlinedButton.styleFrom(
-                            minimumSize: const Size.fromHeight(48),
-                            foregroundColor: AppColors.primary,
-                            side: const BorderSide(
-                              color: AppColors.primary,
-                              width: 2,
-                            ),
-                            shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(14),
-                            ),
-                          ),
-                          child: const Text('Continue to Dashboard'),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-              ),
-            ),
         ],
       ),
     );
   }
 }
 
-class _Corner extends StatelessWidget {
-  const _Corner({required this.alignment});
+class _AuthField extends StatelessWidget {
+  const _AuthField({
+    required this.label,
+    required this.hint,
+    this.obscure = false,
+    this.controller,
+    this.enabled = true,
+  });
 
-  final Alignment alignment;
+  final String label;
+  final String hint;
+  final bool obscure;
+  final TextEditingController? controller;
+  final bool enabled;
 
   @override
   Widget build(BuildContext context) {
-    return Align(
-      alignment: alignment,
-      child: Container(
-        width: 34,
-        height: 34,
-        decoration: BoxDecoration(
-          border: Border(
-            top: alignment.y < 0
-                ? const BorderSide(color: AppColors.primaryContainer, width: 4)
-                : BorderSide.none,
-            bottom: alignment.y > 0
-                ? const BorderSide(color: AppColors.primaryContainer, width: 4)
-                : BorderSide.none,
-            left: alignment.x < 0
-                ? const BorderSide(color: AppColors.primaryContainer, width: 4)
-                : BorderSide.none,
-            right: alignment.x > 0
-                ? const BorderSide(color: AppColors.primaryContainer, width: 4)
-                : BorderSide.none,
-          ),
-          borderRadius: BorderRadius.only(
-            topLeft: alignment == Alignment.topLeft
-                ? const Radius.circular(12)
-                : Radius.zero,
-            topRight: alignment == Alignment.topRight
-                ? const Radius.circular(12)
-                : Radius.zero,
-            bottomLeft: alignment == Alignment.bottomLeft
-                ? const Radius.circular(12)
-                : Radius.zero,
-            bottomRight: alignment == Alignment.bottomRight
-                ? const Radius.circular(12)
-                : Radius.zero,
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: const EdgeInsets.only(left: 8, bottom: 5),
+          child: Text(
+            label,
+            style: Theme.of(
+              context,
+            ).textTheme.labelSmall?.copyWith(color: AppColors.onSurfaceVariant),
           ),
         ),
-      ),
+        TextField(
+          controller: controller,
+          obscureText: obscure,
+          enabled: enabled,
+          decoration: InputDecoration(
+            hintText: hint,
+            filled: true,
+            fillColor: Colors.white.withValues(alpha: 0.52),
+            border: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(14),
+              borderSide: const BorderSide(color: AppColors.outlineVariant),
+            ),
+            enabledBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(14),
+              borderSide: const BorderSide(color: AppColors.outlineVariant),
+            ),
+          ),
+        ),
+      ],
     );
-  }
-}
-
-class UpperCaseTextFormatter extends TextInputFormatter {
-  @override
-  TextEditingValue formatEditUpdate(
-    TextEditingValue oldValue,
-    TextEditingValue newValue,
-  ) {
-    return newValue.copyWith(text: newValue.text.toUpperCase());
   }
 }

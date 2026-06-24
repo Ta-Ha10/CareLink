@@ -1,10 +1,31 @@
 import 'package:flutter/material.dart';
 
+import '../core/constants.dart';
+import '../services/app_storage.dart';
 import '../theme/app_theme.dart';
 import '../widgets/common.dart';
 
 class RoleSelectionPage extends StatelessWidget {
   const RoleSelectionPage({super.key});
+
+  Future<void> _markOnboardingCompleteAndOpenAuth(
+    BuildContext context, {
+    UserRole? preferredRole,
+  }) async {
+    await AppStorage.instance.writeBool(AppPrefsKeys.onboardingComplete, true);
+    if (preferredRole != null) {
+      await AppStorage.instance.writeString(
+        AppPrefsKeys.preferredRole,
+        preferredRole.value,
+      );
+    }
+
+    if (!context.mounted) {
+      return;
+    }
+
+    Navigator.of(context).pushReplacementNamed('/auth');
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -56,7 +77,10 @@ class RoleSelectionPage extends StatelessWidget {
                       action: 'Continue as Patient',
                       icon: Icons.person,
                       color: AppColors.primary,
-                      onTap: () => Navigator.of(context).pushNamed('/patient'),
+                      onTap: () => _markOnboardingCompleteAndOpenAuth(
+                        context,
+                        preferredRole: UserRole.patient,
+                      ),
                     ),
                     RoleCard(
                       title: 'I am a Caregiver',
@@ -65,8 +89,10 @@ class RoleSelectionPage extends StatelessWidget {
                       action: 'Continue as Caregiver',
                       icon: Icons.visibility,
                       color: AppColors.secondary,
-                      onTap: () =>
-                          Navigator.of(context).pushNamed('/monitoring'),
+                      onTap: () => _markOnboardingCompleteAndOpenAuth(
+                        context,
+                        preferredRole: UserRole.monitor,
+                      ),
                     ),
                   ];
                   if (!wide) {
@@ -98,7 +124,7 @@ class RoleSelectionPage extends StatelessWidget {
               const SizedBox(height: 14),
               Center(
                 child: OutlinedButton(
-                  onPressed: () => Navigator.of(context).pushNamed('/auth'),
+                  onPressed: () => _markOnboardingCompleteAndOpenAuth(context),
                   style: OutlinedButton.styleFrom(
                     foregroundColor: AppColors.primary,
                     side: BorderSide(

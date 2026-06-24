@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../core/constants.dart';
 import '../core/exceptions.dart';
+import '../services/app_storage.dart';
 import '../services/firebase_auth_service.dart';
 import '../services/firestore_service.dart';
 import '../repositories/auth_repository.dart';
@@ -236,13 +237,13 @@ class _LoginFormState extends State<_LoginForm> {
         firestoreService: firestoreService,
       );
 
-      await authRepository.loginUser(
+      final user = await authRepository.loginUser(
         email: _emailController.text.trim(),
         password: _passwordController.text,
       );
 
       if (mounted) {
-        Navigator.of(context).pushReplacementNamed('/role');
+        Navigator.of(context).pushReplacementNamed(_homeRouteFor(user.role));
       }
     } on AuthException catch (e) {
       setState(() {
@@ -267,6 +268,15 @@ class _LoginFormState extends State<_LoginForm> {
         behavior: SnackBarBehavior.floating,
       ),
     );
+  }
+
+  String _homeRouteFor(UserRole role) {
+    switch (role) {
+      case UserRole.patient:
+        return '/patient';
+      case UserRole.monitor:
+        return '/monitoring';
+    }
   }
 
   @override
@@ -294,7 +304,9 @@ class _LoginFormState extends State<_LoginForm> {
             Checkbox(
               value: widget.remember,
               activeColor: AppColors.primary,
-              onChanged: _isLoading ? null : (value) => widget.onRemember(value ?? false),
+              onChanged: _isLoading
+                  ? null
+                  : (value) => widget.onRemember(value ?? false),
             ),
             const Expanded(child: Text('Remember for 30 days')),
             TextButton(
@@ -314,7 +326,9 @@ class _LoginFormState extends State<_LoginForm> {
           ),
         GradientButton(
           label: _isLoading ? 'Signing In...' : 'Sign In',
-          onPressed: () { if (!_isLoading) _handleLogin(); },
+          onPressed: () {
+            if (!_isLoading) _handleLogin();
+          },
         ),
       ],
     );
@@ -332,7 +346,7 @@ class _RegisterFormState extends State<_RegisterForm> {
   late TextEditingController _nameController;
   late TextEditingController _emailController;
   late TextEditingController _passwordController;
-  UserRole? _selectedRole;
+  UserRole _selectedRole = UserRole.patient;
   bool _isLoading = false;
   String? _errorMessage;
 
@@ -342,7 +356,7 @@ class _RegisterFormState extends State<_RegisterForm> {
     _nameController = TextEditingController();
     _emailController = TextEditingController();
     _passwordController = TextEditingController();
-    _selectedRole = UserRole.patient; // Default to patient
+    _loadPreferredRole();
   }
 
   @override
@@ -351,6 +365,19 @@ class _RegisterFormState extends State<_RegisterForm> {
     _emailController.dispose();
     _passwordController.dispose();
     super.dispose();
+  }
+
+  Future<void> _loadPreferredRole() async {
+    final storedRole = await AppStorage.instance.readString(
+      AppPrefsKeys.preferredRole,
+    );
+    if (!mounted || storedRole == null) {
+      return;
+    }
+
+    setState(() {
+      _selectedRole = UserRole.fromString(storedRole);
+    });
   }
 
   bool _validateForm() {
@@ -384,7 +411,9 @@ class _RegisterFormState extends State<_RegisterForm> {
     }
 
     if (!_passwordController.text.contains(RegExp(r'[0-9]'))) {
-      setState(() => _errorMessage = 'Password must contain at least one number');
+      setState(
+        () => _errorMessage = 'Password must contain at least one number',
+      );
       return false;
     }
 
@@ -413,12 +442,18 @@ class _RegisterFormState extends State<_RegisterForm> {
         email: _emailController.text.trim(),
         password: _passwordController.text,
         name: _nameController.text.trim(),
-        role: _selectedRole ?? UserRole.patient,
+        role: _selectedRole,
         phone: '', // Will be added in profile completion
       );
 
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
+        final navigator = Navigator.of(context);
+        final messenger = ScaffoldMessenger.of(context);
+        await AppStorage.instance.writeString(
+          AppPrefsKeys.preferredRole,
+          _selectedRole.value,
+        );
+        messenger.showSnackBar(
           const SnackBar(
             content: Text('Registration successful! Redirecting...'),
             backgroundColor: Colors.green,
@@ -426,7 +461,7 @@ class _RegisterFormState extends State<_RegisterForm> {
         );
         await Future.delayed(const Duration(milliseconds: 1500));
         if (mounted) {
-          Navigator.of(context).pushReplacementNamed('/role');
+          navigator.pushReplacementNamed(_homeRouteFor(_selectedRole));
         }
       }
     } on AuthException catch (e) {
@@ -450,6 +485,15 @@ class _RegisterFormState extends State<_RegisterForm> {
         behavior: SnackBarBehavior.floating,
       ),
     );
+  }
+
+  String _homeRouteFor(UserRole role) {
+    switch (role) {
+      case UserRole.patient:
+        return '/patient';
+      case UserRole.monitor:
+        return '/monitoring';
+    }
   }
 
   @override
@@ -488,38 +532,37 @@ class _RegisterFormState extends State<_RegisterForm> {
             ).textTheme.labelSmall?.copyWith(color: AppColors.outline),
           ),
         ),
-        const SizedBox(height: 16),
-        // Role Selection
-        Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Padding(
-              padding: const EdgeInsets.only(left: 8, bottom: 8),
-              child: Text(
-                'Account Type',
-                style: Theme.of(
-                  context,
-                ).textTheme.labelSmall?.copyWith(color: AppColors.onSurfaceVariant),
+        const SizedBox(height: 18),
+        Align(
+          alignment: Alignment.centerLeft,
+          child: Padding(
+            padding: const EdgeInsets.only(left: 8, bottom: 8),
+            child: Text(
+              'Choose your role',
+              style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                color: AppColors.onSurfaceVariant,
               ),
             ),
-            Row(
-              children: [
-                Expanded(
-                  child: _RoleButton(
-                    label: 'Patient',
-                    selected: _selectedRole == UserRole.patient,
-                    onTap: _isLoading ? null : () => setState(() => _selectedRole = UserRole.patient),
-                  ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: _RoleButton(
-                    label: 'Monitor',
-                    selected: _selectedRole == UserRole.monitor,
-                    onTap: _isLoading ? null : () => setState(() => _selectedRole = UserRole.monitor),
-                  ),
-                ),
-              ],
+          ),
+        ),
+        Row(
+          children: [
+            Expanded(
+              child: _RoleChoiceChip(
+                label: 'Patient',
+                selected: _selectedRole == UserRole.patient,
+                enabled: !_isLoading,
+                onTap: () => setState(() => _selectedRole = UserRole.patient),
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: _RoleChoiceChip(
+                label: 'Caregiver',
+                selected: _selectedRole == UserRole.monitor,
+                enabled: !_isLoading,
+                onTap: () => setState(() => _selectedRole = UserRole.monitor),
+              ),
             ),
           ],
         ),
@@ -535,48 +578,11 @@ class _RegisterFormState extends State<_RegisterForm> {
         GradientButton(
           label: _isLoading ? 'Creating Account...' : 'Create Account',
           icon: Icons.person_add,
-          onPressed: () { if (!_isLoading) _handleRegistration(); },
+          onPressed: () {
+            if (!_isLoading) _handleRegistration();
+          },
         ),
       ],
-    );
-  }
-}
-
-class _RoleButton extends StatelessWidget {
-  const _RoleButton({
-    required this.label,
-    required this.selected,
-    this.onTap,
-  });
-
-  final String label;
-  final bool selected;
-  final VoidCallback? onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    return GestureDetector(
-      onTap: onTap,
-      child: Container(
-        padding: const EdgeInsets.all(12),
-        decoration: BoxDecoration(
-          border: Border.all(
-            color: selected ? AppColors.primary : AppColors.outlineVariant,
-            width: selected ? 2 : 1,
-          ),
-          borderRadius: BorderRadius.circular(12),
-          color: selected ? AppColors.primary.withValues(alpha: 0.1) : Colors.transparent,
-        ),
-        child: Center(
-          child: Text(
-            label,
-            style: TextStyle(
-              color: selected ? AppColors.primary : AppColors.onSurfaceVariant,
-              fontWeight: selected ? FontWeight.bold : FontWeight.normal,
-            ),
-          ),
-        ),
-      ),
     );
   }
 }
@@ -683,6 +689,55 @@ class _SocialButton extends StatelessWidget {
           color: AppColors.outlineVariant.withValues(alpha: 0.5),
         ),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+      ),
+    );
+  }
+}
+
+class _RoleChoiceChip extends StatelessWidget {
+  const _RoleChoiceChip({
+    required this.label,
+    required this.selected,
+    required this.enabled,
+    required this.onTap,
+  });
+
+  final String label;
+  final bool selected;
+  final bool enabled;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = selected
+        ? const [AppColors.primary, AppColors.secondary]
+        : [AppColors.surfaceContainerHighest, AppColors.surfaceContainerHigh];
+
+    return AnimatedOpacity(
+      opacity: enabled ? 1 : 0.65,
+      duration: const Duration(milliseconds: 160),
+      child: InkWell(
+        onTap: enabled ? onTap : null,
+        borderRadius: BorderRadius.circular(16),
+        child: Container(
+          height: 50,
+          alignment: Alignment.center,
+          decoration: BoxDecoration(
+            gradient: LinearGradient(colors: colors),
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(
+              color: selected ? AppColors.primary : AppColors.outlineVariant,
+              width: selected ? 1.5 : 1,
+            ),
+          ),
+          child: Text(
+            label,
+            style: TextStyle(
+              color: selected ? Colors.white : AppColors.onSurfaceVariant,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+        ),
       ),
     );
   }

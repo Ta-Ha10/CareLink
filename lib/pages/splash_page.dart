@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import '../core/constants.dart';
+import '../services/app_storage.dart';
 import '../theme/app_theme.dart';
 import '../widgets/common.dart';
 
@@ -13,6 +15,7 @@ class SplashPage extends StatefulWidget {
 class _SplashPageState extends State<SplashPage>
     with SingleTickerProviderStateMixin {
   late final AnimationController _controller;
+  bool _navigated = false;
 
   @override
   void initState() {
@@ -21,12 +24,34 @@ class _SplashPageState extends State<SplashPage>
       vsync: this,
       duration: const Duration(seconds: 4),
     )..repeat(reverse: true);
+    _routeAfterSplash();
   }
 
   @override
   void dispose() {
     _controller.dispose();
     super.dispose();
+  }
+
+  Future<void> _routeAfterSplash() async {
+    await Future.delayed(const Duration(seconds: 2));
+
+    if (!mounted || _navigated) {
+      return;
+    }
+
+    final onboardingComplete =
+        await AppStorage.instance.readBool(AppPrefsKeys.onboardingComplete) ??
+        false;
+
+    if (!mounted || _navigated) {
+      return;
+    }
+
+    _navigated = true;
+    Navigator.of(
+      context,
+    ).pushReplacementNamed(onboardingComplete ? '/auth' : '/role');
   }
 
   @override
@@ -109,8 +134,21 @@ class _SplashPageState extends State<SplashPage>
                       height: 60,
                       width: double.infinity,
                       child: ElevatedButton(
-                        onPressed: () =>
-                            Navigator.of(context).pushNamed('/role'),
+                        onPressed: () async {
+                          final onboardingComplete =
+                              await AppStorage.instance.readBool(
+                                AppPrefsKeys.onboardingComplete,
+                              ) ??
+                              false;
+
+                          if (!context.mounted) {
+                            return;
+                          }
+
+                          Navigator.of(
+                            context,
+                          ).pushNamed(onboardingComplete ? '/auth' : '/role');
+                        },
                         style: ElevatedButton.styleFrom(
                           backgroundColor: Colors.white,
                           foregroundColor: AppColors.primary,

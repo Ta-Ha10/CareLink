@@ -9,7 +9,7 @@ class NotificationRepository {
   final FirestoreService _firestoreService;
 
   NotificationRepository({required FirestoreService firestoreService})
-      : _firestoreService = firestoreService;
+    : _firestoreService = firestoreService;
 
   /// Create a new notification
   Future<String> createNotification({
@@ -69,25 +69,21 @@ class NotificationRepository {
     bool unreadOnly = false,
   }) async {
     try {
-      final conditions = [
-        QueryCondition(field: 'userId', value: userId),
-      ];
-
-      if (unreadOnly) {
-        conditions.add(QueryCondition(field: 'isRead', value: false));
-      }
-
       final result = await _firestoreService.queryDocuments(
         collection: FirestoreCollections.notifications,
-        conditions: conditions,
-        orderBy: 'createdAt',
-        descending: true,
-        limit: limit,
+        conditions: [QueryCondition(field: 'userId', value: userId)],
       );
 
-      return result.docs
-          .map((doc) => NotificationModel.fromJson(doc.data(), doc.id))
-          .toList();
+      final notifications =
+          result.docs
+              .map((doc) => NotificationModel.fromJson(doc.data(), doc.id))
+              .where(
+                (notification) => !unreadOnly || notification.isRead == false,
+              )
+              .toList()
+            ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
+
+      return notifications.take(limit).toList();
     } catch (e) {
       rethrow;
     }
@@ -100,26 +96,24 @@ class NotificationRepository {
     bool unreadOnly = false,
   }) {
     try {
-      final conditions = [
-        QueryCondition(field: 'userId', value: userId),
-      ];
-
-      if (unreadOnly) {
-        conditions.add(QueryCondition(field: 'isRead', value: false));
-      }
-
       return _firestoreService
           .streamDocuments(
             collection: FirestoreCollections.notifications,
-            conditions: conditions,
-            orderBy: 'createdAt',
-            descending: true,
-            limit: limit,
+            conditions: [QueryCondition(field: 'userId', value: userId)],
           )
           .map((snapshot) {
-            return snapshot.docs
-                .map((doc) => NotificationModel.fromJson(doc.data(), doc.id))
-                .toList();
+            final notifications =
+                snapshot.docs
+                    .map(
+                      (doc) => NotificationModel.fromJson(doc.data(), doc.id),
+                    )
+                    .where(
+                      (notification) =>
+                          !unreadOnly || notification.isRead == false,
+                    )
+                    .toList()
+                  ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
+            return notifications.take(limit).toList();
           });
     } catch (e) {
       return Stream.error(e);
@@ -127,9 +121,7 @@ class NotificationRepository {
   }
 
   /// Mark notification as read
-  Future<void> markNotificationAsRead({
-    required String notificationId,
-  }) async {
+  Future<void> markNotificationAsRead({required String notificationId}) async {
     try {
       await _firestoreService.updateDocument(
         collection: FirestoreCollections.notifications,
@@ -152,11 +144,13 @@ class NotificationRepository {
       if (unreadNotifications.isEmpty) return;
 
       final operations = unreadNotifications
-          .map((notification) => BatchUpdateOperation(
-            collection: FirestoreCollections.notifications,
-            docId: notification.id,
-            data: {'isRead': true},
-          ))
+          .map(
+            (notification) => BatchUpdateOperation(
+              collection: FirestoreCollections.notifications,
+              docId: notification.id,
+              data: {'isRead': true},
+            ),
+          )
           .toList();
 
       if (operations.isNotEmpty) {
@@ -168,9 +162,7 @@ class NotificationRepository {
   }
 
   /// Delete notification
-  Future<void> deleteNotification({
-    required String notificationId,
-  }) async {
+  Future<void> deleteNotification({required String notificationId}) async {
     try {
       await _firestoreService.deleteDocument(
         collection: FirestoreCollections.notifications,
@@ -189,10 +181,12 @@ class NotificationRepository {
       if (notifications.isEmpty) return;
 
       final operations = notifications
-          .map((notification) => BatchDeleteOperation(
-            collection: FirestoreCollections.notifications,
-            docId: notification.id,
-          ))
+          .map(
+            (notification) => BatchDeleteOperation(
+              collection: FirestoreCollections.notifications,
+              docId: notification.id,
+            ),
+          )
           .toList();
 
       if (operations.isNotEmpty) {
@@ -208,13 +202,13 @@ class NotificationRepository {
     try {
       final result = await _firestoreService.queryDocuments(
         collection: FirestoreCollections.notifications,
-        conditions: [
-          QueryCondition(field: 'userId', value: userId),
-          QueryCondition(field: 'isRead', value: false),
-        ],
+        conditions: [QueryCondition(field: 'userId', value: userId)],
       );
 
-      return result.docs.length;
+      return result.docs
+          .map((doc) => NotificationModel.fromJson(doc.data(), doc.id))
+          .where((notification) => notification.isRead == false)
+          .length;
     } catch (e) {
       rethrow;
     }
@@ -225,12 +219,14 @@ class NotificationRepository {
     return _firestoreService
         .streamDocuments(
           collection: FirestoreCollections.notifications,
-          conditions: [
-            QueryCondition(field: 'userId', value: userId),
-            QueryCondition(field: 'isRead', value: false),
-          ],
+          conditions: [QueryCondition(field: 'userId', value: userId)],
         )
-        .map((snapshot) => snapshot.docs.length);
+        .map((snapshot) {
+          return snapshot.docs
+              .map((doc) => NotificationModel.fromJson(doc.data(), doc.id))
+              .where((notification) => notification.isRead == false)
+              .length;
+        });
   }
 
   /// Create medicine notification
@@ -244,9 +240,26 @@ class NotificationRepository {
       title: 'Medicine Reminder',
       message: 'Take $medicineName ($dosage)',
       type: NotificationType.medicine,
+      metadata: {'medicineName': medicineName, 'dosage': dosage},
+    );
+  }
+
+  /// Create activity notification
+  Future<String> createActivityNotification({
+    required String userId,
+    required String activityTitle,
+    required String activityDescription,
+    required String activityTime,
+  }) {
+    return createNotification(
+      userId: userId,
+      title: 'Activity Update',
+      message: '$activityTitle - $activityDescription at $activityTime',
+      type: NotificationType.activity,
       metadata: {
-        'medicineName': medicineName,
-        'dosage': dosage,
+        'activityTitle': activityTitle,
+        'activityDescription': activityDescription,
+        'activityTime': activityTime,
       },
     );
   }

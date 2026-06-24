@@ -12,6 +12,11 @@ class ConnectionModel {
   final DateTime? acceptedAt;
   final String? patientName; // Denormalized for quick access
   final String? monitorName; // Denormalized for quick access
+  final int? heartRate;
+  final String? bloodPressure;
+  final String? currentState;
+  final DateTime? vitalsUpdatedAt;
+  final String? vitalsUpdatedBy;
 
   const ConnectionModel({
     required this.id,
@@ -23,6 +28,11 @@ class ConnectionModel {
     this.acceptedAt,
     this.patientName,
     this.monitorName,
+    this.heartRate,
+    this.bloodPressure,
+    this.currentState,
+    this.vitalsUpdatedAt,
+    this.vitalsUpdatedBy,
   });
 
   /// Create ConnectionModel from Firestore document
@@ -32,11 +42,18 @@ class ConnectionModel {
       patientId: json['patientId'] as String? ?? '',
       monitorId: json['monitorId'] as String? ?? '',
       inviteCode: json['inviteCode'] as String? ?? '',
-      status: ConnectionStatus.fromString(json['status'] as String? ?? 'pending'),
+      status: ConnectionStatus.fromString(
+        json['status'] as String? ?? 'pending',
+      ),
       createdAt: (json['createdAt'] as Timestamp?)?.toDate() ?? DateTime.now(),
       acceptedAt: (json['acceptedAt'] as Timestamp?)?.toDate(),
       patientName: json['patientName'] as String?,
       monitorName: json['monitorName'] as String?,
+      heartRate: (json['heartRate'] as num?)?.toInt(),
+      bloodPressure: json['bloodPressure'] as String?,
+      currentState: json['currentState'] as String?,
+      vitalsUpdatedAt: (json['vitalsUpdatedAt'] as Timestamp?)?.toDate(),
+      vitalsUpdatedBy: json['vitalsUpdatedBy'] as String?,
     );
   }
 
@@ -51,6 +68,13 @@ class ConnectionModel {
       'acceptedAt': acceptedAt != null ? Timestamp.fromDate(acceptedAt!) : null,
       'patientName': patientName,
       'monitorName': monitorName,
+      'heartRate': heartRate,
+      'bloodPressure': bloodPressure,
+      'currentState': currentState,
+      'vitalsUpdatedAt': vitalsUpdatedAt != null
+          ? Timestamp.fromDate(vitalsUpdatedAt!)
+          : null,
+      'vitalsUpdatedBy': vitalsUpdatedBy,
     };
   }
 
@@ -65,6 +89,11 @@ class ConnectionModel {
     DateTime? acceptedAt,
     String? patientName,
     String? monitorName,
+    int? heartRate,
+    String? bloodPressure,
+    String? currentState,
+    DateTime? vitalsUpdatedAt,
+    String? vitalsUpdatedBy,
   }) {
     return ConnectionModel(
       id: id ?? this.id,
@@ -76,9 +105,15 @@ class ConnectionModel {
       acceptedAt: acceptedAt ?? this.acceptedAt,
       patientName: patientName ?? this.patientName,
       monitorName: monitorName ?? this.monitorName,
+      heartRate: heartRate ?? this.heartRate,
+      bloodPressure: bloodPressure ?? this.bloodPressure,
+      currentState: currentState ?? this.currentState,
+      vitalsUpdatedAt: vitalsUpdatedAt ?? this.vitalsUpdatedAt,
+      vitalsUpdatedBy: vitalsUpdatedBy ?? this.vitalsUpdatedBy,
     );
   }
 
   @override
-  String toString() => 'ConnectionModel(id: $id, patientId: $patientId, monitorId: $monitorId, status: ${status.value})';
+  String toString() =>
+      'ConnectionModel(id: $id, patientId: $patientId, monitorId: $monitorId, status: ${status.value})';
 }

@@ -193,7 +193,7 @@ class CareBottomNav extends StatelessWidget {
       ('Home', Icons.home, '/patient'),
       ('Monitoring', Icons.monitor_heart, '/monitoring'),
       ('Medicine', Icons.medication, '/medicine'),
-      ('Alerts', Icons.notifications_active, '/notifications'),
+      ('Activity', Icons.event_note, '/activity'),
       ('Settings', Icons.settings, '/settings'),
     ];
     return Container(

@@ -1,105 +1,623 @@
 import 'package:flutter/material.dart';
 
+import '../core/constants.dart';
+import '../core/exceptions.dart';
+import '../models/connection_model.dart';
+import '../models/medicine_model.dart';
+import '../models/user_model.dart';
+import '../repositories/connection_repository.dart';
+import '../repositories/medicine_repository.dart';
+import '../repositories/user_repository.dart';
+import '../services/firebase_auth_service.dart';
+import '../services/firestore_service.dart';
 import '../theme/app_theme.dart';
 import '../widgets/common.dart';
 
-class MonitoringPage extends StatelessWidget {
+class MonitoringPage extends StatefulWidget {
   const MonitoringPage({super.key});
 
   @override
+  State<MonitoringPage> createState() => _MonitoringPageState();
+}
+
+class _MonitoringPageState extends State<MonitoringPage> {
+  final FirebaseAuthService _authService = FirebaseAuthService();
+  final FirestoreService _firestoreService = FirestoreService();
+  late final ConnectionRepository _connectionRepository = ConnectionRepository(
+    firestoreService: _firestoreService,
+  );
+  late final MedicineRepository _medicineRepository = MedicineRepository(
+    firestoreService: _firestoreService,
+  );
+  late final UserRepository _userRepository = UserRepository(
+    firestoreService: _firestoreService,
+  );
+  late final Future<_MonitorHomeContext> _contextFuture = _loadContext();
+
+  Future<_MonitorHomeContext> _loadContext() async {
+    final uid = _authService.currentUserId;
+    if (uid == null) {
+      throw AuthException(message: 'No user logged in', code: 'no-user');
+    }
+
+    final currentUser = await _userRepository.getUserById(uid: uid);
+    final connection =
+        await _connectionRepository.getLatestActiveConnectionForMonitor(
+          monitorId: uid,
+        ) ??
+        await _connectionRepository.getLatestConnectionForMonitor(
+          monitorId: uid,
+        );
+
+    UserModel? patient;
+    if (connection != null) {
+      patient = await _userRepository.getUserById(uid: connection.patientId);
+    }
+
+    return _MonitorHomeContext(
+      currentUser: currentUser,
+      connection: connection,
+      patient: patient,
+    );
+  }
+
+  Color _colorForIndex(int index) {
+    final colors = [AppColors.primary, AppColors.secondary, AppColors.tertiary];
+    return colors[index % colors.length];
+  }
+
+  Future<void> _editVital({
+    required BuildContext context,
+    required String title,
+    required String fieldLabel,
+    required String initialValue,
+    required IconData icon,
+    required Color color,
+    required TextInputType keyboardType,
+    required Future<void> Function(String value) onSave,
+    String? helperText,
+    String? hintText,
+    bool Function(String value)? validator,
+  }) async {
+    final formKey = GlobalKey<FormState>();
+    final controller = TextEditingController(text: initialValue);
+    var saving = false;
+
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) {
+        return StatefulBuilder(
+          builder: (dialogContext, setDialogState) {
+            return AlertDialog(
+              title: Row(
+                children: [
+                  CircleAvatar(
+                    backgroundColor: color.withValues(alpha: 0.12),
+                    child: Icon(icon, color: color),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(child: Text(title)),
+                ],
+              ),
+              content: Form(
+                key: formKey,
+                child: TextFormField(
+                  controller: controller,
+                  keyboardType: keyboardType,
+                  decoration: InputDecoration(
+                    labelText: fieldLabel,
+                    hintText: hintText,
+                    helperText: helperText,
+                  ),
+                  validator: (value) {
+                    final text = value?.trim() ?? '';
+                    if (text.isEmpty) {
+                      return 'Please enter $fieldLabel';
+                    }
+                    if (validator != null && !validator(text)) {
+                      return 'Enter a valid $fieldLabel';
+                    }
+                    return null;
+                  },
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: saving
+                      ? null
+                      : () => Navigator.of(dialogContext).pop(),
+                  child: const Text('Cancel'),
+                ),
+                FilledButton(
+                  onPressed: saving
+                      ? null
+                      : () async {
+                          if (!(formKey.currentState?.validate() ?? false)) {
+                            return;
+                          }
+
+                          setDialogState(() => saving = true);
+                          try {
+                            await onSave(controller.text.trim());
+                            if (!dialogContext.mounted) return;
+                            Navigator.of(dialogContext).pop();
+                          } catch (e) {
+                            if (!dialogContext.mounted) return;
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(
+                                content: Text(
+                                  'Failed to update $fieldLabel: $e',
+                                ),
+                              ),
+                            );
+                          } finally {
+                            if (dialogContext.mounted) {
+                              setDialogState(() => saving = false);
+                            }
+                          }
+                        },
+                  child: saving
+                      ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Text('Save'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+    controller.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
-    return CareScaffold(
-      bottomNavIndex: 1,
-      floatingActionButton: FloatingActionButton(
-        onPressed: () => Navigator.of(context).pushNamed('/sos'),
-        backgroundColor: AppColors.error,
-        foregroundColor: Colors.white,
-        child: const Icon(Icons.emergency),
+    return FutureBuilder<_MonitorHomeContext>(
+      future: _contextFuture,
+      builder: (context, snapshot) {
+        if (snapshot.connectionState == ConnectionState.waiting) {
+          return const Scaffold(
+            body: Center(child: CircularProgressIndicator()),
+          );
+        }
+
+        if (snapshot.hasError) {
+          final error = snapshot.error;
+          return Scaffold(
+            body: Center(
+              child: Padding(
+                padding: const EdgeInsets.all(24),
+                child: Text(
+                  error is AppException ? error.message : error.toString(),
+                  textAlign: TextAlign.center,
+                ),
+              ),
+            ),
+          );
+        }
+
+        final contextData = snapshot.data!;
+        final connection = contextData.connection;
+        final patient = contextData.patient;
+
+        return CareScaffold(
+          bottomNavIndex: 1,
+          floatingActionButton: FloatingActionButton(
+            onPressed: () => Navigator.of(context).pushNamed('/sos'),
+            backgroundColor: AppColors.error,
+            foregroundColor: Colors.white,
+            child: const Icon(Icons.emergency),
+          ),
+          child: PageContent(
+            maxWidth: 980,
+            children: [
+              GradientButton(
+                label: 'Logout',
+                icon: Icons.logout,
+                gradient: LinearGradient(
+                  colors: [
+                    AppColors.error,
+                    AppColors.error.withValues(alpha: 0.82),
+                  ],
+                ),
+                onPressed: () async {
+                  try {
+                    await FirebaseAuthService().logout();
+                    if (!context.mounted) return;
+                    Navigator.of(
+                      context,
+                    ).pushNamedAndRemoveUntil('/auth', (route) => false);
+                  } catch (e) {
+                    if (!context.mounted) return;
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(content: Text('Logout failed: $e')),
+                    );
+                  }
+                },
+              ),
+              const SizedBox(height: 20),
+              if (connection == null)
+                GradientButton(
+                  label: 'Link Patient',
+                  icon: Icons.link,
+                  onPressed: () => Navigator.of(
+                    context,
+                  ).pushNamed('/connect', arguments: UserRole.monitor),
+                )
+              else
+                GlassCard(
+                  radius: 24,
+                  child: Row(
+                    children: [
+                      const CircleAvatar(
+                        backgroundColor: AppColors.secondaryContainer,
+                        child: Icon(
+                          Icons.check_circle,
+                          color: AppColors.primary,
+                        ),
+                      ),
+                      const SizedBox(width: 14),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'Patient Linked',
+                              style: Theme.of(context).textTheme.titleMedium
+                                  ?.copyWith(fontWeight: FontWeight.w700),
+                            ),
+                            const SizedBox(height: 4),
+                            Text(
+                              patient != null
+                                  ? '${patient.name} (${patient.email})'
+                                  : 'Connected with a patient',
+                              style: Theme.of(context).textTheme.bodySmall
+                                  ?.copyWith(color: AppColors.onSurfaceVariant),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              const SizedBox(height: 20),
+              LayoutBuilder(
+                builder: (context, constraints) {
+                  final wide = constraints.maxWidth > 760;
+                  return StreamBuilder<ConnectionModel?>(
+                    stream: connection == null
+                        ? Stream.value(null)
+                        : _connectionRepository.streamConnectionById(
+                            connectionId: connection.id,
+                          ),
+                    builder: (context, connectionSnapshot) {
+                      final liveConnection =
+                          connectionSnapshot.data ?? connection;
+                      final heartRate =
+                          liveConnection?.heartRate?.toString() ?? '--';
+                      final bloodPressure =
+                          liveConnection?.bloodPressure ?? '--';
+                      final currentState =
+                          liveConnection?.currentState ?? 'Not set';
+                      void showNoConnectionSnack() {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(
+                            content: Text(
+                              'Link a patient before editing vitals.',
+                            ),
+                          ),
+                        );
+                      }
+
+                      final cards = [
+                        _EditableVitalCard(
+                          label: 'Heart Rate',
+                          value: heartRate,
+                          unit: 'BPM',
+                          icon: Icons.favorite,
+                          color: AppColors.error,
+                          onEdit: () {
+                            if (liveConnection == null) {
+                              showNoConnectionSnack();
+                              return;
+                            }
+                            _editVital(
+                              context: context,
+                              title: 'Edit Heart Rate',
+                              fieldLabel: 'Heart Rate',
+                              initialValue:
+                                  liveConnection.heartRate?.toString() ?? '',
+                              icon: Icons.favorite,
+                              color: AppColors.error,
+                              keyboardType: TextInputType.number,
+                              hintText: 'Enter heart rate in BPM',
+                              validator: (value) => int.tryParse(value) != null,
+                              onSave: (value) async {
+                                await _connectionRepository
+                                    .updateConnectionVitals(
+                                      connectionId: liveConnection.id,
+                                      heartRate: int.parse(value),
+                                      updatedBy: contextData.currentUser.uid,
+                                    );
+                              },
+                            );
+                          },
+                        ),
+                        _EditableVitalCard(
+                          label: 'Blood Pressure',
+                          value: bloodPressure,
+                          unit: 'mmHg',
+                          icon: Icons.bloodtype,
+                          color: AppColors.secondary,
+                          onEdit: () {
+                            if (liveConnection == null) {
+                              showNoConnectionSnack();
+                              return;
+                            }
+                            _editVital(
+                              context: context,
+                              title: 'Edit Blood Pressure',
+                              fieldLabel: 'Blood Pressure',
+                              initialValue: liveConnection.bloodPressure ?? '',
+                              icon: Icons.bloodtype,
+                              color: AppColors.secondary,
+                              keyboardType: TextInputType.text,
+                              hintText: 'Example: 120/80',
+                              onSave: (value) async {
+                                await _connectionRepository
+                                    .updateConnectionVitals(
+                                      connectionId: liveConnection.id,
+                                      bloodPressure: value,
+                                      updatedBy: contextData.currentUser.uid,
+                                    );
+                              },
+                            );
+                          },
+                        ),
+                        _EditableVitalCard(
+                          label: 'Current State',
+                          value: currentState,
+                          unit: 'Status',
+                          icon: Icons.bed,
+                          color: AppColors.tertiary,
+                          onEdit: () {
+                            if (liveConnection == null) {
+                              showNoConnectionSnack();
+                              return;
+                            }
+                            _editVital(
+                              context: context,
+                              title: 'Edit Current State',
+                              fieldLabel: 'Current State',
+                              initialValue: liveConnection.currentState ?? '',
+                              icon: Icons.bed,
+                              color: AppColors.tertiary,
+                              keyboardType: TextInputType.text,
+                              hintText: 'Example: Resting, Walking, Sleeping',
+                              onSave: (value) async {
+                                await _connectionRepository
+                                    .updateConnectionVitals(
+                                      connectionId: liveConnection.id,
+                                      currentState: value,
+                                      updatedBy: contextData.currentUser.uid,
+                                    );
+                              },
+                            );
+                          },
+                        ),
+                      ];
+
+                      return GridView.count(
+                        crossAxisCount: wide ? 3 : 1,
+                        crossAxisSpacing: 16,
+                        mainAxisSpacing: 16,
+                        shrinkWrap: true,
+                        physics: const NeverScrollableScrollPhysics(),
+                        childAspectRatio: wide ? 1.65 : 2.4,
+                        children: cards,
+                      );
+                    },
+                  );
+                },
+              ),
+              const SizedBox(height: 24),
+              GlassCard(
+                radius: 28,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Linked Patient',
+                      style: Theme.of(context).textTheme.titleLarge,
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      patient != null
+                          ? '${patient.name} (${patient.email})'
+                          : 'No active patient linked yet',
+                      style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                        color: AppColors.onSurfaceVariant,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 20),
+              SectionTitle('Patient Medicines', action: 'Live Sync'),
+              const SizedBox(height: 14),
+              StreamBuilder<List<MedicineModel>>(
+                stream: connection == null
+                    ? Stream.value(const <MedicineModel>[])
+                    : _medicineRepository.streamConnectionMedicines(
+                        connectionId: connection.id,
+                      ),
+                builder: (context, medicineSnapshot) {
+                  if (medicineSnapshot.connectionState ==
+                          ConnectionState.waiting &&
+                      !medicineSnapshot.hasData) {
+                    return const Center(child: CircularProgressIndicator());
+                  }
+
+                  final medicines = medicineSnapshot.data ?? const [];
+                  if (medicines.isEmpty) {
+                    return GlassCard(
+                      radius: 24,
+                      child: Text(
+                        connection == null
+                            ? 'Link a patient to see their medicines.'
+                            : 'No medicines have been added for this patient yet.',
+                        style: Theme.of(context).textTheme.bodyLarge,
+                      ),
+                    );
+                  }
+
+                  return Column(
+                    children: [
+                      for (var i = 0; i < medicines.length; i++) ...[
+                        _MedicineCard(
+                          medicine: medicines[i],
+                          color: _colorForIndex(i),
+                        ),
+                        if (i != medicines.length - 1)
+                          const SizedBox(height: 16),
+                      ],
+                    ],
+                  );
+                },
+              ),
+              const SizedBox(height: 24),
+              LayoutBuilder(
+                builder: (context, constraints) {
+                  final wide = constraints.maxWidth > 760;
+                  final children = [const _MapPreview(), const _ActivityHint()];
+                  return wide
+                      ? Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Expanded(child: children[0]),
+                            const SizedBox(width: 20),
+                            Expanded(child: children[1]),
+                          ],
+                        )
+                      : Column(
+                          children: [
+                            children[0],
+                            const SizedBox(height: 20),
+                            children[1],
+                          ],
+                        );
+                },
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _MonitorHomeContext {
+  final UserModel currentUser;
+  final ConnectionModel? connection;
+  final UserModel? patient;
+
+  const _MonitorHomeContext({
+    required this.currentUser,
+    required this.connection,
+    required this.patient,
+  });
+}
+
+class _MedicineCard extends StatelessWidget {
+  const _MedicineCard({required this.medicine, required this.color});
+
+  final MedicineModel medicine;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(30),
+        border: Border(left: BorderSide(color: color, width: 6)),
+        boxShadow: [
+          BoxShadow(
+            color: const Color(0xFF0F172A).withValues(alpha: 0.05),
+            blurRadius: 30,
+            offset: const Offset(0, 10),
+          ),
+        ],
       ),
-      child: PageContent(
-        maxWidth: 980,
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          LayoutBuilder(
-            builder: (context, constraints) {
-              final wide = constraints.maxWidth > 760;
-              final cards = const [
-                _VitalCard(
-                  label: 'Heart Rate',
-                  value: '72',
-                  unit: 'BPM',
-                  icon: Icons.favorite,
-                  color: AppColors.error,
-                ),
-                _VitalCard(
-                  label: 'Blood Oxygen',
-                  value: '98',
-                  unit: '%',
-                  icon: Icons.air,
-                  color: AppColors.secondary,
-                ),
-                _VitalCard(
-                  label: 'Current State',
-                  value: 'Resting',
-                  unit: '45 mins',
-                  icon: Icons.bed,
-                  color: AppColors.tertiary,
-                ),
-              ];
-              return GridView.count(
-                crossAxisCount: wide ? 3 : 1,
-                crossAxisSpacing: 16,
-                mainAxisSpacing: 16,
-                shrinkWrap: true,
-                physics: const NeverScrollableScrollPhysics(),
-                childAspectRatio: wide ? 1.55 : 2.4,
-                children: cards,
-              );
-            },
+          CircleAvatar(
+            radius: 28,
+            backgroundColor: color.withValues(alpha: 0.1),
+            child: Icon(Icons.medication, color: color, size: 30),
           ),
-          const SizedBox(height: 24),
-          LayoutBuilder(
-            builder: (context, constraints) {
-              final wide = constraints.maxWidth > 760;
-              final children = [const _MapPreview(), const _RecentAlerts()];
-              return wide
-                  ? Row(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Expanded(child: children[0]),
-                        const SizedBox(width: 20),
-                        Expanded(child: children[1]),
-                      ],
-                    )
-                  : Column(
-                      children: [
-                        children[0],
-                        const SizedBox(height: 20),
-                        children[1],
-                      ],
-                    );
-            },
-          ),
-          const SizedBox(height: 24),
-          LayoutBuilder(
-            builder: (context, constraints) {
-              final wide = constraints.maxWidth > 760;
-              return wide
-                  ? const Row(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Expanded(child: _DailyMedsCard()),
-                        SizedBox(width: 20),
-                        Expanded(flex: 2, child: _ActivityTimeline()),
-                      ],
-                    )
-                  : const Column(
-                      children: [
-                        _DailyMedsCard(),
-                        SizedBox(height: 20),
-                        _ActivityTimeline(),
-                      ],
-                    );
-            },
+          const SizedBox(width: 14),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            medicine.medicineName,
+                            style: const TextStyle(
+                              fontWeight: FontWeight.w700,
+                              fontSize: 18,
+                            ),
+                          ),
+                          Text(
+                            medicine.dosage,
+                            style: Theme.of(context).textTheme.bodyMedium
+                                ?.copyWith(color: AppColors.onSurfaceVariant),
+                          ),
+                        ],
+                      ),
+                    ),
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 12,
+                        vertical: 7,
+                      ),
+                      decoration: BoxDecoration(
+                        color: AppColors.surfaceContainer,
+                        borderRadius: BorderRadius.circular(20),
+                      ),
+                      child: Text(
+                        medicine.time,
+                        style: const TextStyle(
+                          color: AppColors.onSurfaceVariant,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+                if ((medicine.notes ?? '').isNotEmpty) ...[
+                  const SizedBox(height: 10),
+                  Text(
+                    medicine.notes!,
+                    style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                      color: AppColors.onSurfaceVariant,
+                    ),
+                  ),
+                ],
+              ],
+            ),
           ),
         ],
       ),
@@ -107,13 +625,14 @@ class MonitoringPage extends StatelessWidget {
   }
 }
 
-class _VitalCard extends StatelessWidget {
-  const _VitalCard({
+class _EditableVitalCard extends StatelessWidget {
+  const _EditableVitalCard({
     required this.label,
     required this.value,
     required this.unit,
     required this.icon,
     required this.color,
+    required this.onEdit,
   });
 
   final String label;
@@ -121,6 +640,7 @@ class _VitalCard extends StatelessWidget {
   final String unit;
   final IconData icon;
   final Color color;
+  final VoidCallback? onEdit;
 
   @override
   Widget build(BuildContext context) {
@@ -139,9 +659,22 @@ class _VitalCard extends StatelessWidget {
                   color: AppColors.onSurfaceVariant,
                 ),
               ),
-              CircleAvatar(
-                backgroundColor: color.withValues(alpha: 0.12),
-                child: Icon(icon, color: color),
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  IconButton(
+                    onPressed: onEdit,
+                    icon: const Icon(Icons.edit_outlined),
+                    color: onEdit == null
+                        ? AppColors.outline
+                        : AppColors.onSurfaceVariant,
+                    tooltip: onEdit == null ? 'No patient linked' : 'Edit',
+                  ),
+                  CircleAvatar(
+                    backgroundColor: color.withValues(alpha: 0.12),
+                    child: Icon(icon, color: color),
+                  ),
+                ],
               ),
             ],
           ),
@@ -231,252 +764,26 @@ class _MapPreview extends StatelessWidget {
   }
 }
 
-class _RecentAlerts extends StatelessWidget {
-  const _RecentAlerts();
+class _ActivityHint extends StatelessWidget {
+  const _ActivityHint();
 
   @override
   Widget build(BuildContext context) {
     return GlassCard(
       radius: 28,
-      child: SizedBox(
-        height: 280,
-        child: Column(
-          children: [
-            const SectionTitle('Recent Alerts', action: 'View All'),
-            const SizedBox(height: 16),
-            const _AlertTile(
-              title: 'High Heart Rate Detected',
-              text: 'Pulse peaked at 110 BPM during rest.',
-              time: '10:45 AM Today',
-              color: AppColors.error,
-              icon: Icons.warning,
-            ),
-            const SizedBox(height: 12),
-            const _AlertTile(
-              title: 'Medication Missed',
-              text: 'Morning dosage of Lisinopril not confirmed.',
-              time: '09:00 AM Today',
-              color: AppColors.primary,
-              icon: Icons.notifications,
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _AlertTile extends StatelessWidget {
-  const _AlertTile({
-    required this.title,
-    required this.text,
-    required this.time,
-    required this.color,
-    required this.icon,
-  });
-
-  final String title;
-  final String text;
-  final String time;
-  final Color color;
-  final IconData icon;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.08),
-        borderRadius: BorderRadius.circular(18),
-        border: Border(left: BorderSide(color: color, width: 4)),
-      ),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Icon(icon, color: color),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  title,
-                  style: const TextStyle(fontWeight: FontWeight.w700),
-                ),
-                Text(
-                  text,
-                  style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                    color: AppColors.onSurfaceVariant,
-                  ),
-                ),
-                Text(
-                  time,
-                  style: const TextStyle(
-                    fontSize: 10,
-                    color: AppColors.outline,
-                    fontWeight: FontWeight.w700,
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _DailyMedsCard extends StatelessWidget {
-  const _DailyMedsCard();
-
-  @override
-  Widget build(BuildContext context) {
-    return const GlassCard(
-      radius: 28,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
-            'Daily Meds',
-            style: TextStyle(fontSize: 24, fontWeight: FontWeight.w600),
+            'Shared Activity',
+            style: Theme.of(context).textTheme.titleLarge,
           ),
-          SizedBox(height: 16),
-          _MedStatus(
-            name: 'Lisinopril',
-            detail: 'Taken at 8:15 AM',
-            done: true,
-          ),
-          SizedBox(height: 14),
-          _MedStatus(name: 'Metformin', detail: 'Due at 8:00 PM', done: false),
-        ],
-      ),
-    );
-  }
-}
-
-class _MedStatus extends StatelessWidget {
-  const _MedStatus({
-    required this.name,
-    required this.detail,
-    required this.done,
-  });
-
-  final String name;
-  final String detail;
-  final bool done;
-
-  @override
-  Widget build(BuildContext context) {
-    return Row(
-      children: [
-        CircleAvatar(
-          backgroundColor: done
-              ? AppColors.secondary.withValues(alpha: 0.1)
-              : AppColors.outlineVariant.withValues(alpha: 0.12),
-          child: Icon(
-            done ? Icons.check : Icons.schedule,
-            color: done ? AppColors.secondary : AppColors.outline,
-          ),
-        ),
-        const SizedBox(width: 12),
-        Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(name, style: const TextStyle(fontWeight: FontWeight.w700)),
-            Text(
-              detail,
-              style: Theme.of(
-                context,
-              ).textTheme.labelSmall?.copyWith(color: AppColors.outline),
-            ),
-          ],
-        ),
-      ],
-    );
-  }
-}
-
-class _ActivityTimeline extends StatelessWidget {
-  const _ActivityTimeline();
-
-  @override
-  Widget build(BuildContext context) {
-    return const GlassCard(
-      radius: 28,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            'Activity Timeline',
-            style: TextStyle(fontSize: 24, fontWeight: FontWeight.w600),
-          ),
-          SizedBox(height: 18),
-          _TimelineItem(
-            icon: Icons.directions_walk,
-            title: 'Morning Walk Completed',
-            text: '2,450 steps tracked in Central Park area.',
-            time: '7:30 AM - 8:00 AM',
-          ),
-          SizedBox(height: 18),
-          _TimelineItem(
-            icon: Icons.restaurant,
-            title: 'Breakfast',
-            text: 'Logged by smart kitchen device.',
-            time: '8:20 AM',
+          const SizedBox(height: 12),
+          const Text(
+            'Use the Activity tab to add shared updates and notes that both sides can read.',
           ),
         ],
       ),
-    );
-  }
-}
-
-class _TimelineItem extends StatelessWidget {
-  const _TimelineItem({
-    required this.icon,
-    required this.title,
-    required this.text,
-    required this.time,
-  });
-
-  final IconData icon;
-  final String title;
-  final String text;
-  final String time;
-
-  @override
-  Widget build(BuildContext context) {
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        CircleAvatar(
-          backgroundColor: Colors.white,
-          foregroundColor: AppColors.primary,
-          child: Icon(icon, size: 20),
-        ),
-        const SizedBox(width: 14),
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(title, style: const TextStyle(fontWeight: FontWeight.w700)),
-              Text(
-                text,
-                style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                  color: AppColors.onSurfaceVariant,
-                ),
-              ),
-              Text(
-                time,
-                style: const TextStyle(
-                  fontSize: 10,
-                  color: AppColors.outline,
-                  fontWeight: FontWeight.w700,
-                ),
-              ),
-            ],
-          ),
-        ),
-      ],
     );
   }
 }

@@ -14,8 +14,8 @@ class AuthRepository {
   AuthRepository({
     required FirebaseAuthService authService,
     required FirestoreService firestoreService,
-  })  : _authService = authService,
-        _firestoreService = firestoreService;
+  }) : _authService = authService,
+       _firestoreService = firestoreService;
 
   /// Get current user ID
   String? get currentUserId => _authService.currentUserId;
@@ -45,7 +45,9 @@ class AuthRepository {
       }
 
       if (name.length < 2) {
-        throw ValidationException.invalidInput('name must be at least 2 characters');
+        throw ValidationException.invalidInput(
+          'name must be at least 2 characters',
+        );
       }
 
       // Register with Firebase Auth
@@ -77,9 +79,14 @@ class AuthRepository {
           data: user.toJson(),
         );
       } catch (e) {
-        // Log Firestore write error but don't fail registration
-        // Auth user is already created successfully
-        print('Warning: Failed to create Firestore user document: $e');
+        // Keep auth and Firestore in sync by removing the partially-created
+        // account if we cannot persist the profile record.
+        try {
+          await _authService.deleteAccount();
+        } catch (_) {
+          // If cleanup fails, still surface the original registration error.
+        }
+        rethrow;
       }
 
       return user;
@@ -115,10 +122,10 @@ class AuthRepository {
           collection: FirestoreCollections.users,
           docId: uid,
         );
-        
+
         if (userDoc.exists) {
           firestoreUser = UserModel.fromJson(userDoc.data()!);
-          
+
           // Update online status
           await _firestoreService.updateDocument(
             collection: FirestoreCollections.users,
@@ -127,8 +134,7 @@ class AuthRepository {
           );
         }
       } catch (e) {
-        // Firestore is optional - continue with auth user data
-        print('Note: Could not access Firestore: $e');
+        // Firestore is optional - continue with auth user data.
       }
 
       // If we have Firestore user data, use it; otherwise create from auth
@@ -160,8 +166,7 @@ class AuthRepository {
             data: {'isOnline': false, 'updatedAt': DateTime.now()},
           );
         } catch (e) {
-          // Firestore update is optional - continue with logout
-          print('Note: Could not update offline status: $e');
+          // Firestore update is optional - continue with logout.
         }
       }
 
@@ -176,10 +181,7 @@ class AuthRepository {
     try {
       final uid = _authService.currentUserId;
       if (uid == null) {
-        throw AuthException(
-          message: 'No user logged in',
-          code: 'no-user',
-        );
+        throw AuthException(message: 'No user logged in', code: 'no-user');
       }
 
       final userDoc = await _firestoreService.getDocument(

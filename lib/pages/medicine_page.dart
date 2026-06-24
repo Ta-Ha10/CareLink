@@ -1,21 +1,17 @@
 import 'package:flutter/material.dart';
 
+import '../core/constants.dart';
+import '../core/exceptions.dart';
+import '../models/connection_model.dart';
+import '../models/medicine_model.dart';
+import '../models/user_model.dart';
+import '../repositories/connection_repository.dart';
+import '../repositories/medicine_repository.dart';
+import '../repositories/user_repository.dart';
+import '../services/firebase_auth_service.dart';
+import '../services/firestore_service.dart';
 import '../theme/app_theme.dart';
 import '../widgets/common.dart';
-
-class Medicine {
-  final String id;
-  final String name;
-  final String type;
-  final String time;
-
-  Medicine({
-    required this.id,
-    required this.name,
-    required this.type,
-    required this.time,
-  });
-}
 
 class MedicinePage extends StatefulWidget {
   const MedicinePage({super.key});
@@ -25,178 +21,423 @@ class MedicinePage extends StatefulWidget {
 }
 
 class _MedicinePageState extends State<MedicinePage> {
-  final List<Medicine> medicines = [];
+  final FirebaseAuthService _authService = FirebaseAuthService();
+  final FirestoreService _firestoreService = FirestoreService();
+  late final MedicineRepository _medicineRepository = MedicineRepository(
+    firestoreService: _firestoreService,
+  );
+  late final ConnectionRepository _connectionRepository = ConnectionRepository(
+    firestoreService: _firestoreService,
+  );
+  late final UserRepository _userRepository = UserRepository(
+    firestoreService: _firestoreService,
+  );
+  late final Future<_MedicineContext> _contextFuture = _loadContext();
 
-  void _addMedicine() {
-    showDialog(
-      context: context,
-      builder: (context) => _AddMedicineDialog(
-        onAdd: (name, type, time) {
-          setState(() {
-            medicines.add(
-              Medicine(
-                id: DateTime.now().toString(),
-                name: name,
-                type: type,
-                time: time,
-              ),
-            );
-          });
-        },
-      ),
+  Future<_MedicineContext> _loadContext() async {
+    final uid = _authService.currentUserId;
+    if (uid == null) {
+      throw AuthException(message: 'No user logged in', code: 'no-user');
+    }
+
+    final currentUser = await _userRepository.getUserById(uid: uid);
+    if (currentUser.role == UserRole.patient) {
+      final connection = await _connectionRepository
+          .getLatestActiveConnectionForPatient(patientId: uid);
+      return _MedicineContext(
+        currentUser: currentUser,
+        connection: connection,
+        patient: currentUser,
+      );
+    }
+
+    final connection = await _connectionRepository
+        .getLatestActiveConnectionForMonitor(monitorId: uid);
+    if (connection == null) {
+      return _MedicineContext(
+        currentUser: currentUser,
+        connection: null,
+        patient: null,
+      );
+    }
+
+    final patient = await _userRepository.getUserById(
+      uid: connection.patientId,
+    );
+    return _MedicineContext(
+      currentUser: currentUser,
+      connection: connection,
+      patient: patient,
     );
   }
 
-  void _deleteMedicine(String id) {
-    setState(() {
-      medicines.removeWhere((m) => m.id == id);
-    });
+  Future<void> _openAddMedicineDialog(_MedicineContext contextData) async {
+    final patient = contextData.patient;
+    final connection = contextData.connection;
+
+    if (patient == null || connection == null) {
+      return;
+    }
+
+    final added = await showDialog<_NewMedicineInput>(
+      context: context,
+      builder: (dialogContext) => _AddMedicineDialog(
+        patientName: patient.name,
+        patientEmail: patient.email,
+      ),
+    );
+
+    if (added == null || !mounted) {
+      return;
+    }
+
+    try {
+      await _medicineRepository.createMedicine(
+        connectionId: connection.id,
+        patientId: patient.uid,
+        monitorId: contextData.currentUser.uid,
+        medicineName: added.medicineName,
+        dosage: added.dosage,
+        time: added.time,
+        repeatDaily: added.repeatDaily,
+        createdBy: contextData.currentUser.uid,
+        notes: added.notes.isEmpty ? null : added.notes,
+      );
+
+      if (!mounted) {
+        return;
+      }
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Added ${added.medicineName} for ${patient.name}.'),
+          backgroundColor: Colors.green,
+        ),
+      );
+    } on AppException catch (e) {
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(e.message), backgroundColor: Colors.redAccent),
+      );
+    } catch (e) {
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Failed to add medicine: $e'),
+          backgroundColor: Colors.redAccent,
+        ),
+      );
+    }
+  }
+
+  String _todayLabel() {
+    const months = [
+      'January',
+      'February',
+      'March',
+      'April',
+      'May',
+      'June',
+      'July',
+      'August',
+      'September',
+      'October',
+      'November',
+      'December',
+    ];
+    final now = DateTime.now();
+    return '${months[now.month - 1]} ${now.day}, ${now.year}';
+  }
+
+  Color _cardColorForIndex(int index) {
+    final colors = [AppColors.primary, AppColors.secondary, AppColors.tertiary];
+    return colors[index % colors.length];
   }
 
   @override
   Widget build(BuildContext context) {
-    return CareScaffold(
-      bottomNavIndex: 2,
-      floatingActionButton: FloatingActionButton(
-        onPressed: _addMedicine,
-        backgroundColor: AppColors.primaryContainer,
-        foregroundColor: Colors.white,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-        child: const Icon(Icons.add),
-      ),
-      child: PageContent(
-        children: [
-          Text(
-            'Today\'s Schedule',
-            style: Theme.of(context).textTheme.headlineMedium,
-          ),
-          Text(
-            'Wednesday, Oct 24',
-            style: Theme.of(
-              context,
-            ).textTheme.bodyMedium?.copyWith(color: AppColors.onSurfaceVariant),
-          ),
-          const SizedBox(height: 20),
-          const _DayStrip(),
-          const SizedBox(height: 24),
-          const Row(
-            children: [
-              Expanded(
-                child: _ControlCard(
-                  icon: Icons.notifications_active,
-                  title: 'Reminders',
-                  subtitle: 'Voice & Text',
-                  active: true,
-                ),
-              ),
-              SizedBox(width: 14),
-              Expanded(
-                child: _ControlCard(
-                  icon: Icons.vibration,
-                  title: 'Vibration',
-                  subtitle: 'Gentle Haptic',
-                  active: false,
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 24),
-          if (medicines.isEmpty)
-            Center(
+    return FutureBuilder<_MedicineContext>(
+      future: _contextFuture,
+      builder: (context, snapshot) {
+        if (snapshot.connectionState == ConnectionState.waiting) {
+          return const Scaffold(
+            body: Center(child: CircularProgressIndicator()),
+          );
+        }
+
+        if (snapshot.hasError) {
+          final error = snapshot.error;
+          return Scaffold(
+            body: Center(
               child: Padding(
-                padding: const EdgeInsets.symmetric(vertical: 32),
-                child: Column(
+                padding: const EdgeInsets.all(24),
+                child: Text(
+                  error is AppException ? error.message : error.toString(),
+                  textAlign: TextAlign.center,
+                ),
+              ),
+            ),
+          );
+        }
+
+        final contextData = snapshot.data!;
+        final connection = contextData.connection;
+        final patient = contextData.patient;
+        final canEditMedicines =
+            contextData.currentUser.role == UserRole.monitor &&
+            connection != null &&
+            patient != null;
+
+        return CareScaffold(
+          bottomNavIndex: 2,
+          floatingActionButton: canEditMedicines
+              ? FloatingActionButton(
+                  onPressed: () => _openAddMedicineDialog(contextData),
+                  backgroundColor: AppColors.primaryContainer,
+                  foregroundColor: Colors.white,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(20),
+                  ),
+                  child: const Icon(Icons.add),
+                )
+              : null,
+          child: PageContent(
+            children: [
+              Text(
+                canEditMedicines ? 'Patient Medicines' : 'My Medicines',
+                style: Theme.of(context).textTheme.headlineMedium,
+              ),
+              const SizedBox(height: 6),
+              Text(
+                _todayLabel(),
+                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                  color: AppColors.onSurfaceVariant,
+                ),
+              ),
+              const SizedBox(height: 18),
+              if (contextData.currentUser.role == UserRole.monitor)
+                _CaregiverHeader(connection: connection, patient: patient)
+              else
+                _PatientHeader(connection: connection),
+              const SizedBox(height: 20),
+              const _DayStrip(),
+              const SizedBox(height: 24),
+              StreamBuilder<List<MedicineModel>>(
+                stream: connection == null
+                    ? Stream.value(const <MedicineModel>[])
+                    : _medicineRepository.streamConnectionMedicines(
+                        connectionId: connection.id,
+                      ),
+                builder: (context, medicineSnapshot) {
+                  if (medicineSnapshot.connectionState ==
+                          ConnectionState.waiting &&
+                      !medicineSnapshot.hasData) {
+                    return const Center(child: CircularProgressIndicator());
+                  }
+
+                  final medicines = medicineSnapshot.data ?? const [];
+
+                  if (connection == null) {
+                    return GlassCard(
+                      radius: 28,
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            contextData.currentUser.role == UserRole.monitor
+                                ? 'No active patient connection'
+                                : 'No active caregiver connection',
+                            style: Theme.of(context).textTheme.titleLarge,
+                          ),
+                          const SizedBox(height: 8),
+                          Text(
+                            contextData.currentUser.role == UserRole.monitor
+                                ? 'Link a patient first, then add medicines to that connection.'
+                                : 'Wait for your caregiver to connect your account before medicines appear here.',
+                            style: Theme.of(context).textTheme.bodyMedium
+                                ?.copyWith(color: AppColors.onSurfaceVariant),
+                          ),
+                        ],
+                      ),
+                    );
+                  }
+
+                  if (medicines.isEmpty) {
+                    return Center(
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 32),
+                        child: Column(
+                          children: [
+                            Icon(
+                              Icons.medication,
+                              size: 48,
+                              color: AppColors.onSurfaceVariant.withValues(
+                                alpha: 0.3,
+                              ),
+                            ),
+                            const SizedBox(height: 16),
+                            Text(
+                              canEditMedicines
+                                  ? 'No medicines added for this connection yet'
+                                  : 'No medicines added yet',
+                              style: Theme.of(context).textTheme.bodyLarge
+                                  ?.copyWith(color: AppColors.onSurfaceVariant),
+                              textAlign: TextAlign.center,
+                            ),
+                            const SizedBox(height: 8),
+                            Text(
+                              canEditMedicines
+                                  ? 'Tap + to add the first medicine'
+                                  : 'Ask your caregiver to add your medicines',
+                              style: Theme.of(context).textTheme.bodySmall
+                                  ?.copyWith(color: AppColors.onSurfaceVariant),
+                              textAlign: TextAlign.center,
+                            ),
+                          ],
+                        ),
+                      ),
+                    );
+                  }
+
+                  return Column(
+                    children: [
+                      for (var i = 0; i < medicines.length; i++) ...[
+                        _MedicineCard(
+                          medicine: medicines[i],
+                          color: _cardColorForIndex(i),
+                        ),
+                        if (i != medicines.length - 1)
+                          const SizedBox(height: 16),
+                      ],
+                    ],
+                  );
+                },
+              ),
+              const SizedBox(height: 28),
+              Container(
+                padding: const EdgeInsets.all(24),
+                decoration: BoxDecoration(
+                  gradient: emergencyGradient(),
+                  borderRadius: BorderRadius.circular(34),
+                ),
+                child: Row(
                   children: [
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'Missed a dose?',
+                            style: Theme.of(context).textTheme.titleLarge
+                                ?.copyWith(color: Colors.white),
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            canEditMedicines
+                                ? 'Your caregiver can update the schedule instantly.'
+                                : 'Connect with your caregiver instantly.',
+                            style: TextStyle(
+                              color: Colors.white.withValues(alpha: 0.9),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
                     Icon(
-                      Icons.medication,
-                      size: 48,
-                      color: AppColors.onSurfaceVariant.withValues(alpha: 0.3),
-                    ),
-                    const SizedBox(height: 16),
-                    Text(
-                      'No medicines added yet',
-                      style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-                            color: AppColors.onSurfaceVariant,
-                          ),
-                    ),
-                    const SizedBox(height: 8),
-                    Text(
-                      'Tap the + button to add your first medicine',
-                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                            color: AppColors.onSurfaceVariant,
-                          ),
+                      Icons.emergency,
+                      color: Colors.white.withValues(alpha: 0.18),
+                      size: 92,
                     ),
                   ],
                 ),
               ),
-            )
-          else
-            ...medicines.map((medicine) {
-              final colors = [
-                AppColors.primary,
-                AppColors.secondary,
-                AppColors.tertiary,
-              ];
-              final index = medicines.indexOf(medicine) % colors.length;
-              return Padding(
-                padding: const EdgeInsets.only(bottom: 16),
-                child: _MedicineCard(
-                  title: medicine.name,
-                  detail: medicine.type,
-                  time: medicine.time,
-                  color: colors[index],
-                  icon: Icons.medication,
-                  onDelete: () => _deleteMedicine(medicine.id),
-                ),
-              );
-            }).toList(),
-          if (medicines.isNotEmpty) const SizedBox(height: 28),
-          if (medicines.isNotEmpty)
-            Container(
-              padding: const EdgeInsets.all(24),
-              decoration: BoxDecoration(
-                gradient: emergencyGradient(),
-                borderRadius: BorderRadius.circular(34),
-              ),
-              child: Row(
-                children: [
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          'Missed a dose?',
-                          style: Theme.of(
-                            context,
-                          ).textTheme.titleLarge?.copyWith(color: Colors.white),
-                        ),
-                        const SizedBox(height: 4),
-                        Text(
-                          'Connect with your nurse instantly.',
-                          style: TextStyle(
-                            color: Colors.white.withValues(alpha: 0.9),
-                          ),
-                        ),
-                        const SizedBox(height: 16),
-                        FilledButton.tonal(
-                          onPressed: () {},
-                          style: FilledButton.styleFrom(
-                            backgroundColor: Colors.white.withValues(alpha: 0.2),
-                            foregroundColor: Colors.white,
-                          ),
-                          child: const Text('Call Caregiver'),
-                        ),
-                      ],
-                    ),
-                  ),
-                  Icon(
-                    Icons.emergency,
-                    color: Colors.white.withValues(alpha: 0.18),
-                    size: 96,
-                  ),
-                ],
-              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _MedicineContext {
+  final UserModel currentUser;
+  final ConnectionModel? connection;
+  final UserModel? patient;
+
+  const _MedicineContext({
+    required this.currentUser,
+    required this.connection,
+    required this.patient,
+  });
+}
+
+class _PatientHeader extends StatelessWidget {
+  const _PatientHeader({required this.connection});
+
+  final ConnectionModel? connection;
+
+  @override
+  Widget build(BuildContext context) {
+    return GlassCard(
+      radius: 28,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'Today\'s Schedule',
+            style: Theme.of(context).textTheme.titleLarge,
+          ),
+          const SizedBox(height: 8),
+          Text(
+            connection != null
+                ? 'Your medicine list is stored inside the active caregiver connection.'
+                : 'Your medicine list will appear here once a caregiver connects your account.',
+            style: Theme.of(
+              context,
+            ).textTheme.bodyMedium?.copyWith(color: AppColors.onSurfaceVariant),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _CaregiverHeader extends StatelessWidget {
+  const _CaregiverHeader({required this.connection, required this.patient});
+
+  final ConnectionModel? connection;
+  final UserModel? patient;
+
+  @override
+  Widget build(BuildContext context) {
+    return GlassCard(
+      radius: 28,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text('Linked Patient', style: Theme.of(context).textTheme.titleLarge),
+          const SizedBox(height: 8),
+          Text(
+            patient != null
+                ? '${patient!.name} (${patient!.email})'
+                : 'No active patient linked yet',
+            style: Theme.of(
+              context,
+            ).textTheme.bodyLarge?.copyWith(color: AppColors.onSurfaceVariant),
+          ),
+          if (connection != null) ...[
+            const SizedBox(height: 6),
+            Text(
+              'Connection id: ${connection!.id}',
+              style: Theme.of(
+                context,
+              ).textTheme.labelSmall?.copyWith(color: AppColors.outline),
             ),
+          ],
         ],
       ),
     );
@@ -277,48 +518,101 @@ class _DayStrip extends StatelessWidget {
   }
 }
 
-class _ControlCard extends StatelessWidget {
-  const _ControlCard({
-    required this.icon,
-    required this.title,
-    required this.subtitle,
-    required this.active,
-  });
+class _MedicineCard extends StatelessWidget {
+  const _MedicineCard({required this.medicine, required this.color});
 
-  final IconData icon;
-  final String title;
-  final String subtitle;
-  final bool active;
+  final MedicineModel medicine;
+  final Color color;
 
   @override
   Widget build(BuildContext context) {
-    return GlassCard(
-      radius: 24,
-      padding: const EdgeInsets.all(16),
-      child: Column(
+    return Container(
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(30),
+        border: Border(left: BorderSide(color: color, width: 6)),
+        boxShadow: [
+          BoxShadow(
+            color: const Color(0xFF0F172A).withValues(alpha: 0.05),
+            blurRadius: 30,
+            offset: const Offset(0, 10),
+          ),
+        ],
+      ),
+      child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              CircleAvatar(
-                backgroundColor: AppColors.primary.withValues(alpha: 0.1),
-                child: Icon(icon, color: AppColors.primary),
-              ),
-              Switch(
-                value: active,
-                onChanged: (_) {},
-                activeThumbColor: AppColors.primary,
-              ),
-            ],
+          CircleAvatar(
+            radius: 28,
+            backgroundColor: color.withValues(alpha: 0.1),
+            child: Icon(Icons.medication, color: color, size: 30),
           ),
-          const SizedBox(height: 10),
-          Text(title, style: const TextStyle(fontWeight: FontWeight.w700)),
-          Text(
-            subtitle,
-            style: Theme.of(
-              context,
-            ).textTheme.labelSmall?.copyWith(color: AppColors.onSurfaceVariant),
+          const SizedBox(width: 14),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            medicine.medicineName,
+                            style: Theme.of(context).textTheme.titleLarge,
+                          ),
+                          Text(
+                            medicine.dosage,
+                            style: Theme.of(context).textTheme.bodyMedium
+                                ?.copyWith(color: AppColors.onSurfaceVariant),
+                          ),
+                        ],
+                      ),
+                    ),
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 12,
+                        vertical: 7,
+                      ),
+                      decoration: BoxDecoration(
+                        color: AppColors.surfaceContainer,
+                        borderRadius: BorderRadius.circular(20),
+                      ),
+                      child: Text(
+                        medicine.time,
+                        style: const TextStyle(
+                          color: AppColors.onSurfaceVariant,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+                if ((medicine.notes ?? '').isNotEmpty) ...[
+                  const SizedBox(height: 10),
+                  Row(
+                    children: [
+                      const Icon(
+                        Icons.schedule,
+                        size: 16,
+                        color: AppColors.onSurfaceVariant,
+                      ),
+                      const SizedBox(width: 6),
+                      Expanded(
+                        child: Text(
+                          medicine.notes!,
+                          style: Theme.of(context).textTheme.labelSmall
+                              ?.copyWith(color: AppColors.onSurfaceVariant),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ],
+            ),
           ),
         ],
       ),
@@ -326,159 +620,30 @@ class _ControlCard extends StatelessWidget {
   }
 }
 
-class _MedicineCard extends StatelessWidget {
-  const _MedicineCard({
-    required this.title,
-    required this.detail,
-    required this.time,
-    required this.color,
-    required this.icon,
-    this.button = false,
-    this.faded = false,
-    this.note,
-    this.onDelete,
-  });
-
-  final String title;
-  final String detail;
+class _NewMedicineInput {
+  final String medicineName;
+  final String dosage;
   final String time;
-  final Color color;
-  final IconData icon;
-  final bool button;
-  final bool faded;
-  final String? note;
-  final VoidCallback? onDelete;
+  final bool repeatDaily;
+  final String notes;
 
-  @override
-  Widget build(BuildContext context) {
-    return Opacity(
-      opacity: faded ? 0.76 : 1,
-      child: Container(
-        padding: const EdgeInsets.all(20),
-        decoration: BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.circular(30),
-          border: Border(left: BorderSide(color: color, width: 6)),
-          boxShadow: [
-            BoxShadow(
-              color: const Color(0xFF0F172A).withValues(alpha: 0.05),
-              blurRadius: 30,
-              offset: const Offset(0, 10),
-            ),
-          ],
-        ),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            CircleAvatar(
-              radius: 28,
-              backgroundColor: color.withValues(alpha: 0.1),
-              child: Icon(icon, color: color, size: 30),
-            ),
-            const SizedBox(width: 14),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              title,
-                              style: Theme.of(context).textTheme.titleLarge,
-                            ),
-                            Text(
-                              detail,
-                              style: Theme.of(context).textTheme.bodyMedium
-                                  ?.copyWith(color: AppColors.onSurfaceVariant),
-                            ),
-                          ],
-                        ),
-                      ),
-                      Column(
-                        children: [
-                          Container(
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 12,
-                              vertical: 7,
-                            ),
-                            decoration: BoxDecoration(
-                              color: AppColors.surfaceContainer,
-                              borderRadius: BorderRadius.circular(20),
-                            ),
-                            child: Text(
-                              time,
-                              style: TextStyle(
-                                color: button
-                                    ? AppColors.primary
-                                    : AppColors.onSurfaceVariant,
-                                fontWeight: FontWeight.w700,
-                              ),
-                            ),
-                          ),
-                          if (onDelete != null) ...[
-                            const SizedBox(height: 8),
-                            SizedBox(
-                              width: 32,
-                              height: 32,
-                              child: IconButton(
-                                icon: const Icon(Icons.delete_outline),
-                                iconSize: 18,
-                                color: Colors.red,
-                                onPressed: onDelete,
-                                padding: EdgeInsets.zero,
-                              ),
-                            ),
-                          ],
-                        ],
-                      ),
-                    ],
-                  ),
-                  if (button) ...[
-                    const SizedBox(height: 16),
-                    GradientButton(
-                      label: 'Mark Taken',
-                      icon: Icons.check_circle,
-                      height: 48,
-                      onPressed: () {},
-                    ),
-                  ],
-                  if (note != null) ...[
-                    const SizedBox(height: 10),
-                    Row(
-                      children: [
-                        const Icon(
-                          Icons.schedule,
-                          size: 16,
-                          color: AppColors.onSurfaceVariant,
-                        ),
-                        const SizedBox(width: 6),
-                        Text(
-                          note!,
-                          style: Theme.of(context).textTheme.labelSmall
-                              ?.copyWith(color: AppColors.onSurfaceVariant),
-                        ),
-                      ],
-                    ),
-                  ],
-                ],
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
+  const _NewMedicineInput({
+    required this.medicineName,
+    required this.dosage,
+    required this.time,
+    required this.repeatDaily,
+    required this.notes,
+  });
 }
 
 class _AddMedicineDialog extends StatefulWidget {
-  const _AddMedicineDialog({required this.onAdd});
+  const _AddMedicineDialog({
+    required this.patientName,
+    required this.patientEmail,
+  });
 
-  final Function(String name, String type, String time) onAdd;
+  final String patientName;
+  final String patientEmail;
 
   @override
   State<_AddMedicineDialog> createState() => _AddMedicineDialogState();
@@ -486,14 +651,17 @@ class _AddMedicineDialog extends StatefulWidget {
 
 class _AddMedicineDialogState extends State<_AddMedicineDialog> {
   final _nameController = TextEditingController();
-  final _typeController = TextEditingController();
+  final _dosageController = TextEditingController();
   final _timeController = TextEditingController();
+  final _notesController = TextEditingController();
+  bool _repeatDaily = true;
 
   @override
   void dispose() {
     _nameController.dispose();
-    _typeController.dispose();
+    _dosageController.dispose();
     _timeController.dispose();
+    _notesController.dispose();
     super.dispose();
   }
 
@@ -511,36 +679,48 @@ class _AddMedicineDialogState extends State<_AddMedicineDialog> {
   }
 
   void _submit() {
-    if (_nameController.text.isEmpty ||
-        _typeController.text.isEmpty ||
-        _timeController.text.isEmpty) {
+    if (_nameController.text.trim().isEmpty ||
+        _dosageController.text.trim().isEmpty ||
+        _timeController.text.trim().isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Please fill all fields')),
+        const SnackBar(
+          content: Text('Please fill medicine name, dosage, and time'),
+        ),
       );
       return;
     }
 
-    widget.onAdd(
-      _nameController.text,
-      _typeController.text,
-      _timeController.text,
+    Navigator.pop(
+      context,
+      _NewMedicineInput(
+        medicineName: _nameController.text.trim(),
+        dosage: _dosageController.text.trim(),
+        time: _timeController.text.trim(),
+        repeatDaily: _repeatDaily,
+        notes: _notesController.text.trim(),
+      ),
     );
-
-    Navigator.pop(context);
   }
 
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
-      title: const Text('Add Medicine'),
+      title: Text('Add medicine for ${widget.patientName}'),
       content: SingleChildScrollView(
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
+            Text(
+              widget.patientEmail,
+              style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                color: AppColors.onSurfaceVariant,
+              ),
+            ),
+            const SizedBox(height: 16),
             TextField(
               controller: _nameController,
               decoration: InputDecoration(
-                hintText: 'Medicine Name (e.g., Aspirin)',
+                hintText: 'Medicine name',
                 labelText: 'Name',
                 border: OutlineInputBorder(
                   borderRadius: BorderRadius.circular(12),
@@ -549,10 +729,10 @@ class _AddMedicineDialogState extends State<_AddMedicineDialog> {
             ),
             const SizedBox(height: 16),
             TextField(
-              controller: _typeController,
+              controller: _dosageController,
               decoration: InputDecoration(
-                hintText: 'Type & Dosage (e.g., 500mg - After Breakfast)',
-                labelText: 'Type/Dosage',
+                hintText: 'Dosage, e.g. 500mg',
+                labelText: 'Dosage',
                 border: OutlineInputBorder(
                   borderRadius: BorderRadius.circular(12),
                 ),
@@ -572,6 +752,25 @@ class _AddMedicineDialogState extends State<_AddMedicineDialog> {
               readOnly: true,
               onTap: _selectTime,
             ),
+            const SizedBox(height: 8),
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              value: _repeatDaily,
+              onChanged: (value) => setState(() => _repeatDaily = value),
+              title: const Text('Repeat daily'),
+            ),
+            const SizedBox(height: 8),
+            TextField(
+              controller: _notesController,
+              maxLines: 2,
+              decoration: InputDecoration(
+                hintText: 'Optional notes',
+                labelText: 'Notes',
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
+                ),
+              ),
+            ),
           ],
         ),
       ),
@@ -580,10 +779,7 @@ class _AddMedicineDialogState extends State<_AddMedicineDialog> {
           onPressed: () => Navigator.pop(context),
           child: const Text('Cancel'),
         ),
-        FilledButton(
-          onPressed: _submit,
-          child: const Text('Add'),
-        ),
+        FilledButton(onPressed: _submit, child: const Text('Add')),
       ],
     );
   }
